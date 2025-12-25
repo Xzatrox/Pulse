@@ -9,8 +9,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type OsqueryAgentHandlers struct{
-	store *OsqueryStore
+type OsqueryStoreInterface interface {
+	SaveReport(agentID string, processes, services interface{}, timestamp time.Time) error
+	GetLatestReport(agentID string) (map[string]interface{}, error)
+	GetAllLatestReports() (map[string]interface{}, error)
+	Close() error
+}
+
+type OsqueryAgentHandlers struct {
+	store OsqueryStoreInterface
 }
 
 func NewOsqueryAgentHandlers(dataPath string) *OsqueryAgentHandlers {

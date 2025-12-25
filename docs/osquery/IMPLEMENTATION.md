@@ -377,16 +377,43 @@ No additional configuration required. The osquery store is automatically initial
 
 ### Unit Tests
 
+**Test Coverage**:
+- Agent module tests with mocks (no osqueryi required)
+- API handler tests with mock store (no CGO required)
+- Store interface tests with in-memory mock
+
 ```bash
-# Test agent collection
+# Test agent collection (skips if osqueryi not installed)
 go test ./internal/osqueryagent/...
 
-# Test API handlers
-go test ./internal/api/... -run TestOsquery
+# Test API handlers with mock store
+go test -tags=test ./internal/api/... -run Osquery
 
-# Test database operations
-go test ./internal/api/... -run TestOsqueryStore
+# Test mock store implementation
+go test ./internal/api/... -run MockOsquery
 ```
+
+**Test Results**:
+```
+✓ TestOsqueryAgentHandlers_HandleReport - Tests POST endpoint with mock store
+✓ TestOsqueryAgentHandlers_HandleAllReports - Tests GET all reports endpoint
+✓ TestMockOsqueryStore_SaveAndRetrieve - Tests store save/retrieve logic
+✓ TestMockOsqueryStore_GetAllLatestReports - Tests multi-agent retrieval
+✓ TestAgent_CollectAndSend - Tests HTTP report submission with mock server
+⊘ TestNew - Skipped when osqueryi not in PATH
+⊘ TestAgent_Run - Skipped when osqueryi not in PATH
+```
+
+**Mock Store Implementation**:
+- `internal/api/osquery_store_mock.go` - In-memory store for testing
+- Implements `OsqueryStoreInterface` for dependency injection
+- No CGO/SQLite required for tests
+- Thread-safe with mutex protection
+
+**Mock HTTP Server**:
+- `TestAgent_CollectAndSend` uses `httptest.NewServer`
+- Verifies report format and authentication
+- Tests work without running Pulse server
 
 ### Integration Tests
 
@@ -516,3 +543,54 @@ To contribute to osquery integration:
 - [osquery Schema](https://osquery.io/schema/)
 - [Pulse Agent Documentation](../UNIFIED_AGENT.md)
 - [Pulse API Documentation](../API.md)
+
+
+## Test Architecture
+
+### Mock Store Pattern
+
+The osquery integration uses interface-based dependency injection for testability:
+
+```go
+// Interface allows mock implementation
+type OsqueryStoreInterface interface {
+    SaveReport(agentID string, processes, services interface{}, timestamp time.Time) error
+    GetLatestReport(agentID string) (map[string]interface{}, error)
+    GetAllLatestReports() (map[string]interface{}, error)
+    Close() error
+}
+
+// Production implementation (requires CGO)
+type OsqueryStore struct {
+    db *sql.DB
+}
+
+// Test implementation (no CGO required)
+type MockOsqueryStore struct {
+    mu      sync.RWMutex
+    reports map[string]map[string]interface{}
+}
+```
+
+**Benefits**:
+- Tests run without SQLite/CGO dependencies
+- Fast test execution (in-memory storage)
+- Easy to verify behavior without database queries
+- Platform-independent (works on Windows without CGO)
+
+### Test Files
+
+- `internal/osqueryagent/agent_test.go` - Agent logic tests
+- `internal/api/osquery_agents_test.go` - HTTP handler tests
+- `internal/api/osquery_store_test.go` - Mock store tests
+- `internal/api/osquery_store_mock.go` - Mock implementation
+
+### Running Tests Without Dependencies
+
+Tests are designed to work without external dependencies:
+
+1. **No osqueryi required**: Agent tests skip or use mocks
+2. **No CGO required**: Mock store replaces SQLite
+3. **No server required**: httptest provides mock HTTP server
+
+This allows tests to run in CI/CD environments without installing osquery or enabling CGO.

@@ -4,13 +4,13 @@
 
 ```bash
 # Test API handlers
-go test ./internal/api/osquery_agents_test.go ./internal/api/osquery_store_test.go ./internal/api/osquery_agents.go ./internal/api/osquery_store.go -v
+go test -v ./internal/api -run Osquery
 
 # Test agent module
-go test ./internal/osqueryagent/... -v
+go test -v ./internal/osqueryagent/...
 
-# All osquery tests
-go test ./internal/api/osquery*.go ./internal/osqueryagent/... -v
+# All tests
+go test -v ./internal/api/... ./internal/osqueryagent/...
 ```
 
 ## Manual Testing

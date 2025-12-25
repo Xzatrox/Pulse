@@ -5,19 +5,15 @@ import (
 	"time"
 )
 
-func TestOsqueryStore_SaveAndRetrieve(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := NewOsqueryStore(tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestMockOsqueryStore_SaveAndRetrieve(t *testing.T) {
+	store := NewMockOsqueryStore()
 	defer store.Close()
 
 	processes := []map[string]string{{"pid": "1", "name": "init"}}
 	services := []map[string]string{{"name": "sshd", "state": "running"}}
 	timestamp := time.Now()
 
-	err = store.SaveReport("agent-1", processes, services, timestamp)
+	err := store.SaveReport("agent-1", processes, services, timestamp)
 	if err != nil {
 		t.Errorf("SaveReport failed: %v", err)
 	}
@@ -31,12 +27,8 @@ func TestOsqueryStore_SaveAndRetrieve(t *testing.T) {
 	}
 }
 
-func TestOsqueryStore_GetAllLatestReports(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := NewOsqueryStore(tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestMockOsqueryStore_GetAllLatestReports(t *testing.T) {
+	store := NewMockOsqueryStore()
 	defer store.Close()
 
 	store.SaveReport("agent-1", []interface{}{}, []interface{}{}, time.Now())

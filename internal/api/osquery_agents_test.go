@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestOsqueryAgentHandlers_HandleReport(t *testing.T) {
-	tmpDir := t.TempDir()
-	h := NewOsqueryAgentHandlers(tmpDir)
+	h := &OsqueryAgentHandlers{
+		store: NewMockOsqueryStore(),
+	}
 
 	report := map[string]interface{}{
 		"processes": []map[string]interface{}{
@@ -36,8 +35,9 @@ func TestOsqueryAgentHandlers_HandleReport(t *testing.T) {
 }
 
 func TestOsqueryAgentHandlers_HandleAllReports(t *testing.T) {
-	tmpDir := t.TempDir()
-	h := NewOsqueryAgentHandlers(tmpDir)
+	h := &OsqueryAgentHandlers{
+		store: NewMockOsqueryStore(),
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/osquery/reports", nil)
 	w := httptest.NewRecorder()

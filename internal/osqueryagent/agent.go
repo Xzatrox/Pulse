@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/jmpsec/osctrl/pkg/types"
 	"github.com/rs/zerolog"
 )
 
@@ -70,6 +69,4 @@ func (a *Agent) collect() {
 	} else {
 		a.cfg.Logger.Debug().Msg("Report sent successfully")
 	}
-
-	_ = types.StatusLog
 }

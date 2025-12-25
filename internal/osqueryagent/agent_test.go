@@ -2,6 +2,8 @@ package osqueryagent
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -20,7 +22,7 @@ func TestNew(t *testing.T) {
 
 	agent, err := New(cfg)
 	if err != nil {
-		t.Errorf("New failed: %v", err)
+		t.Skip("osqueryi not found in PATH, skipping test")
 	}
 	if agent == nil {
 		t.Error("expected agent, got nil")
@@ -37,12 +39,50 @@ func TestAgent_Run(t *testing.T) {
 		Logger:   &logger,
 	}
 
-	agent, _ := New(cfg)
+	agent, err := New(cfg)
+	if err != nil {
+		t.Skip("osqueryi not found in PATH, skipping test")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	err := agent.Run(ctx)
+	err = agent.Run(ctx)
 	if err != nil && err != context.DeadlineExceeded {
 		t.Errorf("Run failed: %v", err)
+	}
+}
+
+func TestAgent_CollectAndSend(t *testing.T) {
+	reportReceived := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/agents/test-agent/osquery" {
+			reportReceived = true
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	logger := zerolog.Nop()
+	agent := &Agent{
+		cfg: Config{
+			PulseURL: server.URL,
+			APIToken: "test-token",
+			AgentID:  "test-agent",
+			Logger:   &logger,
+		},
+		osqueryBinary: "/mock/osqueryi",
+	}
+
+	processes := []Process{{PID: "1", Name: "init", Path: "/sbin/init"}}
+	services := []Service{{Name: "sshd", State: "running", Status: "active"}}
+
+	err := agent.sendReport(processes, services)
+	if err != nil {
+		t.Errorf("sendReport failed: %v", err)
+	}
+
+	if !reportReceived {
+		t.Error("report was not received by server")
 	}
 }
