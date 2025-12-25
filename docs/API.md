@@ -214,3 +214,38 @@ Serves the universal `install.sh` used to install `pulse-agent` on target machin
 ---
 
 > **Note**: This is a summary of the most common endpoints. For a complete list, inspect the network traffic of the Pulse dashboard or check the source code in `internal/api/router.go`.
+
+
+## Osquery Endpoints
+
+### POST /api/agents/{agentID}/osquery
+Submit osquery report from agent.
+
+**Scope**: `host:report`
+
+**Request Body**:
+```json
+{
+  "processes": [{"pid": "1234", "name": "app", "path": "/usr/bin/app"}],
+  "services": [{"name": "sshd", "state": "running", "status": "active"}],
+  "timestamp": "2024-01-01T00:00:00Z"
+}
+```
+
+**Response**: `{"success": true, "message": "Report received"}`
+
+### GET /api/osquery/reports
+Get all latest osquery reports from all agents.
+
+**Scope**: `monitoring:read`
+
+**Response**:
+```json
+{
+  "agent-1": {
+    "timestamp": "2024-01-01T00:00:00Z",
+    "processes": [...],
+    "services": [...]
+  }
+}
+```
