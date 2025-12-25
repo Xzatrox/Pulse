@@ -21,6 +21,7 @@ import (
 	"github.com/rcourtman/pulse-go-rewrite/internal/dockeragent"
 	"github.com/rcourtman/pulse-go-rewrite/internal/hostagent"
 	"github.com/rcourtman/pulse-go-rewrite/internal/kubernetesagent"
+	"github.com/rcourtman/pulse-go-rewrite/internal/osqueryagent"
 	"github.com/rcourtman/pulse-go-rewrite/internal/utils"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
@@ -207,7 +208,29 @@ func main() {
 		}
 	}
 
-	// 10. Start Kubernetes Agent (if enabled)
+	// 10. Start osquery Agent (if enabled)
+	if cfg.EnableOsquery {
+		osqueryCfg := osqueryagent.Config{
+			PulseURL:           cfg.PulseURL,
+			APIToken:           cfg.APIToken,
+			Interval:           cfg.Interval,
+			AgentID:            cfg.AgentID,
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+			Logger:             &logger,
+		}
+
+		agent, err := osqueryagent.New(osqueryCfg)
+		if err != nil {
+			logger.Warn().Err(err).Msg("osquery not available")
+		} else {
+			g.Go(func() error {
+				logger.Info().Msg("osquery agent module started")
+				return agent.Run(ctx)
+			})
+		}
+	}
+
+	// 11. Start Kubernetes Agent (if enabled)
 	if cfg.EnableKubernetes {
 		kubeCfg := kubernetesagent.Config{
 			PulseURL:           cfg.PulseURL,
@@ -251,7 +274,7 @@ func main() {
 	// Mark as ready after all agents started
 	ready.Store(true)
 
-	// 11. Wait for all agents to exit
+	// 12. Wait for all agents to exit
 	if err := g.Wait(); err != nil && err != context.Canceled {
 		logger.Error().Err(err).Msg("Agent terminated with error")
 		agentUp.Set(0)
@@ -259,7 +282,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 12. Cleanup
+	// 13. Cleanup
 	agentUp.Set(0)
 	cleanupDockerAgent(dockerAgent, &logger)
 
@@ -342,6 +365,7 @@ type Config struct {
 	EnableDocker     bool
 	DockerConfigured bool
 	EnableKubernetes bool
+	EnableOsquery    bool
 	EnableProxmox    bool
 	ProxmoxType      string // "pve", "pbs", or "" for auto-detect
 
@@ -377,6 +401,7 @@ func loadConfig() Config {
 	envEnableHost := utils.GetenvTrim("PULSE_ENABLE_HOST")
 	envEnableDocker := utils.GetenvTrim("PULSE_ENABLE_DOCKER")
 	envEnableKubernetes := utils.GetenvTrim("PULSE_ENABLE_KUBERNETES")
+	envEnableOsquery := utils.GetenvTrim("PULSE_ENABLE_OSQUERY")
 	envEnableProxmox := utils.GetenvTrim("PULSE_ENABLE_PROXMOX")
 	envProxmoxType := utils.GetenvTrim("PULSE_PROXMOX_TYPE")
 	envDisableAutoUpdate := utils.GetenvTrim("PULSE_DISABLE_AUTO_UPDATE")
@@ -414,6 +439,11 @@ func loadConfig() Config {
 		defaultEnableKubernetes = utils.ParseBool(envEnableKubernetes)
 	}
 
+	defaultEnableOsquery := false
+	if envEnableOsquery != "" {
+		defaultEnableOsquery = utils.ParseBool(envEnableOsquery)
+	}
+
 	defaultEnableProxmox := false
 	if envEnableProxmox != "" {
 		defaultEnableProxmox = utils.ParseBool(envEnableProxmox)
@@ -436,6 +466,7 @@ func loadConfig() Config {
 	enableHostFlag := flag.Bool("enable-host", defaultEnableHost, "Enable Host Agent module")
 	enableDockerFlag := flag.Bool("enable-docker", defaultEnableDocker, "Enable Docker Agent module")
 	enableKubernetesFlag := flag.Bool("enable-kubernetes", defaultEnableKubernetes, "Enable Kubernetes Agent module")
+	enableOsqueryFlag := flag.Bool("enable-osquery", defaultEnableOsquery, "Enable osquery Agent module")
 	enableProxmoxFlag := flag.Bool("enable-proxmox", defaultEnableProxmox, "Enable Proxmox mode (creates API token, registers node)")
 	proxmoxTypeFlag := flag.String("proxmox-type", envProxmoxType, "Proxmox type: pve or pbs (auto-detected if not specified)")
 	disableAutoUpdateFlag := flag.Bool("disable-auto-update", utils.ParseBool(envDisableAutoUpdate), "Disable automatic updates")
@@ -507,6 +538,7 @@ func loadConfig() Config {
 		EnableDocker:          *enableDockerFlag,
 		DockerConfigured:      dockerConfigured,
 		EnableKubernetes:      *enableKubernetesFlag,
+		EnableOsquery:         *enableOsqueryFlag,
 		EnableProxmox:         *enableProxmoxFlag,
 		ProxmoxType:           strings.TrimSpace(*proxmoxTypeFlag),
 		DisableAutoUpdate:     *disableAutoUpdateFlag,

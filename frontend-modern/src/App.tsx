@@ -77,6 +77,11 @@ const HostsOverview = lazy(() =>
     default: module.HostsOverview,
   })),
 );
+const OsqueryHosts = lazy(() =>
+  import('./components/Osquery/OsqueryHosts').then((module) => ({
+    default: module.default,
+  })),
+);
 
 
 // Enhanced store type with proper typing
@@ -912,7 +917,7 @@ function App() {
       <Route path="/docker" component={DockerRoute} />
       <Route path="/kubernetes" component={KubernetesRoute} />
       <Route path="/hosts" component={HostsRoute} />
-
+      <Route path="/osquery" component={OsqueryHosts} />
       <Route path="/servers" component={() => <Navigate href="/hosts" />} />
       <Route path="/alerts/*" component={AlertsPage} />
       <Route path="/settings/*" component={SettingsRoute} />
