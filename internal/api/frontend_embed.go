@@ -1,5 +1,5 @@
-//go:build !test
-// +build !test
+//go:build prod
+// +build prod
 
 package api
 
