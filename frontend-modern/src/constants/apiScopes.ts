@@ -10,6 +10,7 @@ export const DOCKER_REPORT_SCOPE = 'docker:report';
 export const DOCKER_MANAGE_SCOPE = 'docker:manage';
 export const KUBERNETES_REPORT_SCOPE = 'kubernetes:report';
 export const KUBERNETES_MANAGE_SCOPE = 'kubernetes:manage';
+export const OSQUERY_REPORT_SCOPE = 'osquery:report';
 export const MONITORING_READ_SCOPE = 'monitoring:read';
 export const MONITORING_WRITE_SCOPE = 'monitoring:write';
 export const SETTINGS_READ_SCOPE = 'settings:read';
@@ -56,6 +57,12 @@ export const API_SCOPE_OPTIONS: APIScopeOption[] = [
     value: HOST_AGENT_SCOPE,
     label: 'Host agent reporting',
     description: 'Allow the host agent to send OS, CPU, and disk metrics.',
+    group: 'Agents',
+  },
+  {
+    value: OSQUERY_REPORT_SCOPE,
+    label: 'osquery agent reporting',
+    description: 'Allow the osquery agent to submit process and service data.',
     group: 'Agents',
   },
   {

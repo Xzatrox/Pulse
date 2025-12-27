@@ -29,7 +29,7 @@ func (a *Agent) sendReport(processes []Process, services []Service) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/osquery/reports", a.cfg.PulseURL)
+	url := fmt.Sprintf("%s/api/agents/osquery/report", a.cfg.PulseURL)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return err
