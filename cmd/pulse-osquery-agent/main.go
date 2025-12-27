@@ -16,6 +16,7 @@ import (
 func main() {
 	// Flags
 	serverURL := flag.String("url", "http://localhost:7655", "Pulse server URL")
+	apiToken := flag.String("api-token", "", "API token for authentication")
 	agentID := flag.String("agent-id", "", "Agent ID (defaults to hostname)")
 	interval := flag.Duration("interval", 60*time.Second, "Collection interval")
 	debug := flag.Bool("debug", false, "Enable debug logging")
@@ -49,6 +50,7 @@ func main() {
 	agent, err := osqueryagent.New(osqueryagent.Config{
 		AgentID:  *agentID,
 		PulseURL: *serverURL,
+		APIToken: *apiToken,
 		Interval: *interval,
 		Logger:   &log.Logger,
 	})

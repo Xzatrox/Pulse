@@ -10,6 +10,7 @@ import (
 )
 
 type Report struct {
+	AgentID   string    `json:"agent_id"`
 	Processes []Process `json:"processes"`
 	Services  []Service `json:"services"`
 	Timestamp time.Time `json:"timestamp"`
@@ -17,6 +18,7 @@ type Report struct {
 
 func (a *Agent) sendReport(processes []Process, services []Service) error {
 	report := Report{
+		AgentID:   a.cfg.AgentID,
 		Processes: processes,
 		Services:  services,
 		Timestamp: time.Now(),
@@ -27,7 +29,7 @@ func (a *Agent) sendReport(processes []Process, services []Service) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/agents/%s/osquery", a.cfg.PulseURL, a.cfg.AgentID)
+	url := fmt.Sprintf("%s/api/osquery/reports", a.cfg.PulseURL)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return err
