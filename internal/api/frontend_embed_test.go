@@ -1,5 +1,5 @@
-//go:build !prod
-// +build !prod
+//go:build never
+// +build never
 
 package api
 
