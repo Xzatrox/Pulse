@@ -14,12 +14,37 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var defaultSystemPatterns = []string{
+	"systemd*", "kworker*", "kthread*", "migration*", "ksoftirqd*", "kswapd*",
+	"kcompactd*", "watchdog*", "*daemon", "dbus*", "rsyslog*", "cron*",
+	"atd*", "accounts-daemon*", "polkit*", "rcu_*", "khugepaged*",
+	"ksmd*", "kdevtmpfs*", "netns*", "kauditd*", "khungtaskd*",
+	"oom_reaper*", "writeback*", "kblockd*", "ata_*", "scsi_*",
+	"md*", "edac-*", "devfreq_*", "ksgxd*", "charger_manager*",
+	"*-wq-*", "irq/*", "aio/*", "crypto*", "kintegrityd*",
+	"bioset*", "kworker/*", "mm_percpu_wq*", "rcu_tasks_*",
+	"idle_inject/*", "cpuhp/*", "ksoft*", "ktimersoftd/*",
+	"getty*", "agetty*", "login*", "*udevd*", "lvmetad*",
+	"multipathd*", "iscsid*", "rpcbind*", "rpc.*", "nfsd*",
+	"lockd*", "rpciod*", "xprtiod*", "nfs*", "jbd2/*",
+	"ext4-*", "xfs-*", "btrfs-*", "dm_*", "raid*",
+	"md*_*", "loop*", "usb-storage*", "scsi_eh_*", "scsi_tmf_*",
+	"iscsi_*", "fc_*", "nvme*", "mmc*", "spi*",
+	"i2c*", "hci*", "bluetooth*", "cfg80211*", "wpa_supplicant*",
+	"dhclient*", "NetworkManager*", "ModemManager*", "avahi*",
+	"cups*", "acpid*", "thermald*", "irqbalance*", "mcelog*",
+	"smartd*", "lvm*", "mdadm*", "auditd*", "audispd*",
+	"sedispatch*", "abrtd*", "abrt-*", "rtkit*", "udisksd*",
+	"upowerd*", "packagekitd*", "colord*", "geoclue*",
+}
+
 func main() {
 	// Flags
 	serverURL := flag.String("url", "http://localhost:7655", "Pulse server URL")
 	apiToken := flag.String("api-token", "", "API token for authentication")
 	agentID := flag.String("agent-id", "", "Agent ID (defaults to hostname)")
 	interval := flag.Duration("interval", 60*time.Second, "Collection interval")
+	filterMode := flag.String("filter-mode", "none", "Filter mode: none, basic, aggressive (default: none)")
 	excludePatterns := flag.String("exclude-patterns", "", "Comma-separated patterns to exclude (supports wildcards: systemd*,*worker*,kthread)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
@@ -44,18 +69,36 @@ func main() {
 
 	// Parse exclude patterns
 	var patterns []string
+	
+	// Apply filter mode presets
+	switch *filterMode {
+	case "basic":
+		patterns = []string{
+			"systemd*", "kworker*", "kthread*", "migration*", "ksoftirqd*",
+			"kswapd*", "kcompactd*", "watchdog*", "*daemon", "dbus*",
+		}
+	case "aggressive":
+		patterns = defaultSystemPatterns
+	case "none":
+		// No preset patterns
+	default:
+		log.Warn().Str("mode", *filterMode).Msg("Unknown filter mode, using 'none'")
+	}
+	
+	// Add custom patterns
 	if *excludePatterns != "" {
-		patterns = strings.Split(*excludePatterns, ",")
-		for i := range patterns {
-			patterns[i] = strings.TrimSpace(patterns[i])
+		customPatterns := strings.Split(*excludePatterns, ",")
+		for _, p := range customPatterns {
+			patterns = append(patterns, strings.TrimSpace(p))
 		}
 	}
 
 	log.Info().
 		Str("agent_id", *agentID).
 		Str("server_url", *serverURL).
+		Str("filter_mode", *filterMode).
+		Int("exclude_pattern_count", len(patterns)).
 		Dur("interval", *interval).
-		Strs("exclude_patterns", patterns).
 		Msg("Starting osquery agent")
 
 	// Create agent
