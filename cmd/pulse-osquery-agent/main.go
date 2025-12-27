@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rcourtman/pulse-go-rewrite/internal/osqueryagent"
+	"github.com/rcourtman/pulse-go-rewrite/internal/utils"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -48,23 +50,103 @@ var defaultSystemPatterns = []string{
 }
 
 func main() {
-	// Flags
-	serverURL := flag.String("url", "http://localhost:7655", "Pulse server URL")
-	apiToken := flag.String("api-token", "", "API token for authentication")
-	agentID := flag.String("agent-id", "", "Agent ID (defaults to hostname)")
-	interval := flag.Duration("interval", 60*time.Second, "Collection interval")
-	filterMode := flag.String("filter-mode", "none", "Filter mode: none, basic, aggressive (default: none)")
-	excludePatterns := flag.String("exclude-patterns", "", "Comma-separated patterns to exclude (supports wildcards: systemd*,*worker*,kthread)")
-	debug := flag.Bool("debug", false, "Enable debug logging")
+	// Read environment variables
+	envURL := utils.GetenvTrim("PULSE_URL")
+	envToken := utils.GetenvTrim("PULSE_TOKEN")
+	envAgentID := utils.GetenvTrim("PULSE_AGENT_ID")
+	envInterval := utils.GetenvTrim("PULSE_INTERVAL")
+	envFilterMode := utils.GetenvTrim("PULSE_OSQUERY_FILTER_MODE")
+	envExcludePatterns := utils.GetenvTrim("PULSE_OSQUERY_EXCLUDE_PATTERNS")
+	envLogLevel := utils.GetenvTrim("LOG_LEVEL")
+
+	defaultInterval := 60 * time.Second
+	if envInterval != "" {
+		if parsed, err := time.ParseDuration(envInterval); err == nil {
+			defaultInterval = parsed
+		}
+	}
+
+	defaultFilterMode := "none"
+	if envFilterMode != "" {
+		defaultFilterMode = envFilterMode
+	}
+
+	defaultLogLevel := "info"
+	if envLogLevel != "" {
+		defaultLogLevel = envLogLevel
+	}
+
+	// Flags (env vars as defaults, flags override)
+	configFile := flag.String("config", "", "Path to configuration file (YAML)")
+	serverURL := flag.String("url", envURL, "Pulse server URL")
+	apiToken := flag.String("api-token", envToken, "API token for authentication")
+	agentID := flag.String("agent-id", envAgentID, "Agent ID (defaults to hostname)")
+	interval := flag.Duration("interval", defaultInterval, "Collection interval")
+	filterMode := flag.String("filter-mode", defaultFilterMode, "Filter mode: none, basic, aggressive")
+	excludePatterns := flag.String("exclude-patterns", envExcludePatterns, "Comma-separated patterns to exclude")
+	logLevel := flag.String("log-level", defaultLogLevel, "Log level: debug, info, warn, error")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(osqueryagent.Version)
+		os.Exit(0)
+	}
+
+	// Load config file if specified
+	if *configFile != "" {
+		cfg, err := loadConfig(*configFile)
+		if err != nil {
+			log.Fatal().Err(err).Str("file", *configFile).Msg("Failed to load config file")
+		}
+		// Config file overrides env vars but not explicit flags
+		if *serverURL == "" && cfg.Server.URL != "" {
+			*serverURL = cfg.Server.URL
+		}
+		if *apiToken == "" && cfg.Server.APIToken != "" {
+			*apiToken = cfg.Server.APIToken
+		}
+		if *agentID == "" && cfg.Agent.ID != "" {
+			*agentID = cfg.Agent.ID
+		}
+		if *interval == defaultInterval && cfg.Agent.Interval != 0 {
+			*interval = cfg.Agent.Interval
+		}
+		if *filterMode == defaultFilterMode && cfg.Filter.Mode != "" {
+			*filterMode = cfg.Filter.Mode
+		}
+		if *excludePatterns == "" && len(cfg.Filter.ExcludePatterns) > 0 {
+			*excludePatterns = strings.Join(cfg.Filter.ExcludePatterns, ",")
+		}
+		if *logLevel == defaultLogLevel && cfg.Logging.Debug {
+			*logLevel = "debug"
+		}
+	}
+
+	// Validate and set defaults
+	if *serverURL == "" {
+		*serverURL = "http://localhost:7655"
+	}
+
+	if *apiToken == "" {
+		fmt.Fprintln(os.Stderr, "error: API token is required (via --api-token, PULSE_TOKEN, or config file)")
+		os.Exit(1)
+	}
+
+	// Parse log level
+	parsedLogLevel, err := parseLogLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Setup logging
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	if *debug {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	zerolog.SetGlobalLevel(parsedLogLevel)
+	if parsedLogLevel == zerolog.DebugLevel {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 	} else {
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+		log.Logger = zerolog.New(os.Stdout).Level(parsedLogLevel).With().Timestamp().Logger()
 	}
 
 	// Get agent ID
@@ -103,6 +185,7 @@ func main() {
 	}
 
 	log.Info().
+		Str("version", osqueryagent.Version).
 		Str("agent_id", *agentID).
 		Str("server_url", *serverURL).
 		Str("filter_mode", *filterMode).
@@ -123,6 +206,20 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to create osquery agent")
 	}
 
+	// Health check
+	log.Info().Msg("Performing health check...")
+	if err := agent.HealthCheck(); err != nil {
+		log.Warn().Err(err).Msg("Health check failed, will retry during operation")
+	} else {
+		log.Info().Msg("Health check passed")
+	}
+
+	// Register agent
+	log.Info().Msg("Registering with Pulse server...")
+	if err := agent.Register(); err != nil {
+		log.Warn().Err(err).Msg("Registration failed, will retry during operation")
+	}
+
 	// Handle shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -133,4 +230,18 @@ func main() {
 	}
 
 	log.Info().Msg("Agent stopped")
+}
+
+func parseLogLevel(value string) (zerolog.Level, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return zerolog.InfoLevel, nil
+	}
+
+	level, err := zerolog.ParseLevel(normalized)
+	if err != nil {
+		return zerolog.InfoLevel, fmt.Errorf("invalid log level %q: must be debug, info, warn, or error", value)
+	}
+
+	return level, nil
 }
