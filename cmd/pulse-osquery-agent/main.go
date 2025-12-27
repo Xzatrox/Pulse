@@ -47,9 +47,10 @@ func main() {
 
 	// Create agent
 	agent, err := osqueryagent.New(osqueryagent.Config{
-		AgentID:    *agentID,
-		ServerURL:  *serverURL,
-		Interval:   *interval,
+		AgentID:  *agentID,
+		PulseURL: *serverURL,
+		Interval: *interval,
+		Logger:   &log.Logger,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create osquery agent")
