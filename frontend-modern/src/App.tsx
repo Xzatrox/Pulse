@@ -1039,6 +1039,7 @@ function AppLayout(props: {
     if (path.startsWith('/docker')) return 'docker';
     if (path.startsWith('/kubernetes')) return 'kubernetes';
     if (path.startsWith('/hosts')) return 'hosts';
+    if (path.startsWith('/osquery')) return 'osquery';
     if (path.startsWith('/servers')) return 'hosts'; // Legacy redirect
     if (path.startsWith('/alerts')) return 'alerts';
     if (path.startsWith('/settings')) return 'settings';
@@ -1131,6 +1132,19 @@ function AppLayout(props: {
           <MonitorIcon class="w-4 h-4 shrink-0" />
         ),
         alwaysShow: true, // Hosts is commonly used, keep visible
+      },
+      {
+        id: 'osquery' as const,
+        label: 'osquery',
+        route: '/osquery',
+        settingsRoute: '/settings',
+        tooltip: 'Monitor systems with osquery',
+        enabled: true,
+        live: true,
+        icon: (
+          <MonitorIcon class="w-4 h-4 shrink-0" />
+        ),
+        alwaysShow: true,
       },
     ];
 
