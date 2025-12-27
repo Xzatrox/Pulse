@@ -36,6 +36,15 @@ var defaultSystemPatterns = []string{
 	"smartd*", "lvm*", "mdadm*", "auditd*", "audispd*",
 	"sedispatch*", "abrtd*", "abrt-*", "rtkit*", "udisksd*",
 	"upowerd*", "packagekitd*", "colord*", "geoclue*",
+	// Additional system services
+	"postfix*", "master", "pickup", "qmgr", "smtp*", "sendmail*",
+	"ssh.service", "sshd.service", "container-getty*", "console-getty*",
+	"plymouth*", "modprobe@*", "dpkg-*", "display-manager*",
+	"e2scrub*", "ldconfig*", "rescue.service", "apt-*",
+	"rc-local*", "emergency.service", "initrd-*", "logrotate*",
+	"kmod-*", "man-db*", "networking.service", "wtmpdb-*",
+	"nftables*", "fstrim*", "connman*", "*-resolvconf*",
+	"syslog.service", "postfix@*",
 }
 
 func main() {
