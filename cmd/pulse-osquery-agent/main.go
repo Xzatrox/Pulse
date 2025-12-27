@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/signal"
@@ -45,13 +46,17 @@ func main() {
 		Msg("Starting osquery agent")
 
 	// Create agent
-	agent, err := osqueryagent.New(*agentID, *serverURL, *interval)
+	agent, err := osqueryagent.New(osqueryagent.Config{
+		AgentID:    *agentID,
+		ServerURL:  *serverURL,
+		Interval:   *interval,
+	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create osquery agent")
 	}
 
 	// Handle shutdown
-	ctx, cancel := signal.NotifyContext(os.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Run agent
