@@ -41,6 +41,7 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 	}
 
 	var report struct {
+		AgentID   string `json:"agent_id"`
 		Processes []struct {
 			PID      string   `json:"pid"`
 			Name     string   `json:"name"`
@@ -61,7 +62,10 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	agentID := extractAgentID(req)
+	agentID := report.AgentID
+	if agentID == "" {
+		agentID = extractAgentID(req)
+	}
 	log.Info().
 		Str("agent_id", agentID).
 		Int("processes", len(report.Processes)).
