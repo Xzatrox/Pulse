@@ -11,6 +11,7 @@ func (a *Agent) filterProcesses(processes []Process) []Process {
 	for _, p := range processes {
 		if !a.shouldExclude(p.Name) {
 			filtered = append(filtered, p)
+			a.cfg.Logger.Debug().Str("process", p.Name).Str("path", p.Path).Msg("Process included")
 		}
 	}
 	return filtered
@@ -25,6 +26,7 @@ func (a *Agent) filterServices(services []Service) []Service {
 	for _, s := range services {
 		if !a.shouldExclude(s.Name) {
 			filtered = append(filtered, s)
+			a.cfg.Logger.Debug().Str("service", s.Name).Str("state", s.State).Msg("Service included")
 		}
 	}
 	return filtered
