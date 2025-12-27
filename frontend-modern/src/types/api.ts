@@ -362,6 +362,7 @@ export interface DockerContainer {
   finishedAt?: number | null;
   ports?: DockerContainerPort[];
   labels?: Record<string, string>;
+  env?: string[];
   networks?: DockerContainerNetwork[];
   writableLayerBytes?: number;
   rootFilesystemBytes?: number;
@@ -437,6 +438,7 @@ export interface Host {
   lastSeen: number;
   intervalSeconds?: number;
   agentVersion?: string;
+  commandsEnabled?: boolean; // Whether AI command execution is enabled on this agent
   tokenId?: string;
   tokenName?: string;
   tokenHint?: string;

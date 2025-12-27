@@ -10,7 +10,7 @@ import { useAlertsActivation } from '@/stores/alertsActivation';
 import { buildMetricKey } from '@/utils/metricsKeys';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { getNodeStatusIndicator, getPBSStatusIndicator } from '@/utils/status';
-import { ResponsiveMetricCell, MetricText } from '@/components/shared/responsive';
+import { ResponsiveMetricCell } from '@/components/shared/responsive';
 import { StackedMemoryBar } from '@/components/Dashboard/StackedMemoryBar';
 import { StackedDiskBar } from '@/components/Dashboard/StackedDiskBar';
 import { EnhancedCPUBar } from '@/components/Dashboard/EnhancedCPUBar';
@@ -360,13 +360,13 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
               <th class={thClass} style={{ "min-width": '80px' }} onClick={() => handleSort('uptime')}>
                 Uptime {renderSortIndicator('uptime')}
               </th>
-              <th class={thClass} style={{ width: "200px", "min-width": "200px", "max-width": "200px" }} onClick={() => handleSort('cpu')}>
+              <th class={thClass} style={isMobile() ? { "min-width": "80px" } : { width: "140px", "min-width": "140px", "max-width": "140px" }} onClick={() => handleSort('cpu')}>
                 CPU {renderSortIndicator('cpu')}
               </th>
-              <th class={thClass} style={{ width: "200px", "min-width": "200px", "max-width": "200px" }} onClick={() => handleSort('memory')}>
+              <th class={thClass} style={isMobile() ? { "min-width": "80px" } : { width: "140px", "min-width": "140px", "max-width": "140px" }} onClick={() => handleSort('memory')}>
                 Memory {renderSortIndicator('memory')}
               </th>
-              <th class={thClass} style={{ width: "200px", "min-width": "200px", "max-width": "200px" }} onClick={() => handleSort('disk')}>
+              <th class={thClass} style={isMobile() ? { "min-width": "80px" } : { width: "140px", "min-width": "140px", "max-width": "140px" }} onClick={() => handleSort('disk')}>
                 Disk {renderSortIndicator('disk')}
               </th>
               <Show when={hasAnyTemperatureData()}>
@@ -483,7 +483,7 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
                 return (
                   <tr
                     class={rowClass()}
-                    style={{ ...rowStyle(), height: '29px', 'max-height': '29px' }}
+                    style={{ ...rowStyle(), 'min-height': '36px' }}
                     onClick={() => props.onNodeClick(nodeId, isPVEItem ? 'pve' : 'pbs')}
                   >
                     {/* Name */}
@@ -575,17 +575,12 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
                     </td>
 
                     {/* CPU */}
-                    <td class={tdClass} style={metricColumnStyle}>
-                      <Show when={isMobile()}>
-                        <div class="md:hidden h-4 flex items-center justify-center">
-                          <MetricText value={cpuPercentValue} type="cpu" />
-                        </div>
-                      </Show>
-                      <div class="hidden md:block h-4">
+                    <td class={tdClass} style={isMobile() ? { "min-width": "80px" } : metricColumnStyle}>
+                      <div class="h-5">
                         <EnhancedCPUBar
                           usage={cpuPercentValue}
                           loadAverage={isPVEItem ? node!.loadAverage?.[0] : undefined}
-                          cores={isPVEItem ? node!.cpuInfo?.cores : undefined}
+                          cores={isMobile() ? undefined : (isPVEItem ? node!.cpuInfo?.cores : undefined)}
                           model={isPVEItem ? node!.cpuInfo?.model : undefined}
                           resourceId={metricsKey}
                         />
@@ -593,13 +588,8 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
                     </td>
 
                     {/* Memory */}
-                    <td class={tdClass} style={metricColumnStyle}>
-                      <Show when={isMobile()}>
-                        <div class="md:hidden h-4 flex items-center justify-center">
-                          <MetricText value={memoryPercentValue} type="memory" />
-                        </div>
-                      </Show>
-                      <div class="hidden md:block h-4">
+                    <td class={tdClass} style={isMobile() ? { "min-width": "80px" } : metricColumnStyle}>
+                      <div class="h-5">
                         <Show when={isPVEItem} fallback={
                           <ResponsiveMetricCell
                             value={memoryPercentValue}
@@ -636,13 +626,8 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
                     </td>
 
                     {/* Disk */}
-                    <td class={tdClass} style={metricColumnStyle}>
-                      <Show when={isMobile()}>
-                        <div class="md:hidden h-4 flex items-center justify-center">
-                          <MetricText value={diskPercentValue} type="disk" />
-                        </div>
-                      </Show>
-                      <div class="hidden md:block h-4">
+                    <td class={tdClass} style={isMobile() ? { "min-width": "80px" } : metricColumnStyle}>
+                      <div class="h-5">
                         <Show when={isPVEItem} fallback={
                           <ResponsiveMetricCell
                             value={diskPercentValue}
@@ -653,14 +638,27 @@ export const NodeSummaryTable: Component<NodeSummaryTableProps> = (props) => {
                             showMobile={false}
                           />
                         }>
-                          <StackedDiskBar
-                            aggregateDisk={{
-                              total: node!.disk?.total || 0,
-                              used: node!.disk?.used || 0,
-                              free: (node!.disk?.total || 0) - (node!.disk?.used || 0),
-                              usage: node!.disk?.total ? (node!.disk.used / node!.disk.total) : 0
-                            }}
-                          />
+                          <Show
+                            when={viewMode() === 'sparklines'}
+                            fallback={
+                              <StackedDiskBar
+                                aggregateDisk={{
+                                  total: node!.disk?.total || 0,
+                                  used: node!.disk?.used || 0,
+                                  free: (node!.disk?.total || 0) - (node!.disk?.used || 0),
+                                  usage: node!.disk?.total ? (node!.disk.used / node!.disk.total) : 0
+                                }}
+                              />
+                            }
+                          >
+                            <ResponsiveMetricCell
+                              value={diskPercentValue}
+                              type="disk"
+                              resourceId={metricsKey}
+                              isRunning={online}
+                              showMobile={false}
+                            />
+                          </Show>
                         </Show>
                       </div>
                     </td>

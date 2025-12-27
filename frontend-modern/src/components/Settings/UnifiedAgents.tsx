@@ -41,10 +41,10 @@ const buildCommandsByPlatform = (url: string): Record<
         snippets: [
             {
                 label: 'Install',
-                command: `curl -fsSL ${url}/install.sh | sudo bash -s -- --url ${url} --token ${TOKEN_PLACEHOLDER} --interval 30s`,
+                command: `curl -fsSL ${url}/install.sh | bash -s -- --url ${url} --token ${TOKEN_PLACEHOLDER} --interval 30s`,
                 note: (
                     <span>
-                        Automatically detects your init system (systemd, OpenRC, Unraid, Synology) and configures the appropriate service. Works on Debian, Ubuntu, Fedora, Alpine, Gentoo, Unraid, Synology, and more.
+                        Run as root (use <code>sudo</code> or <code>su -</code> if not already root). Auto-detects your init system and works on Debian, Ubuntu, Proxmox, Fedora, Alpine, Unraid, Synology, and more.
                     </span>
                 ),
             },
@@ -57,10 +57,10 @@ const buildCommandsByPlatform = (url: string): Record<
         snippets: [
             {
                 label: 'Install with launchd',
-                command: `curl -fsSL ${url}/install.sh | sudo bash -s -- --url ${url} --token ${TOKEN_PLACEHOLDER} --interval 30s`,
+                command: `curl -fsSL ${url}/install.sh | bash -s -- --url ${url} --token ${TOKEN_PLACEHOLDER} --interval 30s`,
                 note: (
                     <span>
-                        Creates <code>/Library/LaunchDaemons/com.pulse.agent.plist</code> and starts the agent automatically.
+                        Run as root (use <code>sudo</code> if not already root). Creates <code>/Library/LaunchDaemons/com.pulse.agent.plist</code> and starts the agent automatically.
                     </span>
                 ),
             },
@@ -109,7 +109,10 @@ export const UnifiedAgents: Component = () => {
     const [lookupError, setLookupError] = createSignal<string | null>(null);
     const [lookupLoading, setLookupLoading] = createSignal(false);
     const [insecureMode, setInsecureMode] = createSignal(false); // For self-signed certificates (issue #806)
+    const [enableCommands, setEnableCommands] = createSignal(false); // Enable AI command execution (issue #903)
     const [customAgentUrl, setCustomAgentUrl] = createSignal('');
+    // Track pending command config changes: hostId -> { desired value, timestamp }
+    const [pendingCommandConfig, setPendingCommandConfig] = createSignal<Record<string, { enabled: boolean; timestamp: number }>>({});
 
     createEffect(() => {
         if (requiresToken()) {
@@ -239,11 +242,14 @@ export const UnifiedAgents: Component = () => {
     };
 
     const getInsecureFlag = () => insecureMode() ? ' --insecure' : '';
+    const getEnableCommandsFlag = () => enableCommands() ? ' --enable-commands' : '';
     const getCurlInsecureFlag = () => insecureMode() ? '-k' : '';
 
     const getUninstallCommand = () => {
         const url = customAgentUrl() || agentUrl();
-        return `curl ${getCurlInsecureFlag()}-fsSL ${url}/install.sh | sudo bash -s -- --uninstall`;
+        const token = currentToken() || latestRecord()?.id || TOKEN_PLACEHOLDER;
+        const insecure = insecureMode() ? ' --insecure' : '';
+        return `curl ${getCurlInsecureFlag()}-fsSL ${url}/install.sh | bash -s -- --uninstall --url ${url} --token ${token}${insecure}`;
     };
 
     // Track previously seen host types to prevent flapping when one source temporarily has no data
@@ -265,6 +271,7 @@ export const UnifiedAgents: Component = () => {
             lastSeen?: number;
             isLegacy?: boolean;
             linkedNodeId?: string;
+            commandsEnabled?: boolean;
         }>();
 
         // Process Host Agents (skip those linked to PVE nodes - they're shown merged with the node)
@@ -284,7 +291,8 @@ export const UnifiedAgents: Component = () => {
                 status: h.status || 'unknown',
                 version: h.agentVersion,
                 lastSeen: h.lastSeen,
-                isLegacy: h.isLegacy
+                isLegacy: h.isLegacy,
+                commandsEnabled: h.commandsEnabled
             });
         });
 
@@ -375,10 +383,25 @@ export const UnifiedAgents: Component = () => {
     });
     const hasRemovedKubernetesClusters = createMemo(() => removedKubernetesClusters().length > 0);
 
+    // Host agents linked to PVE nodes (shown separately with unlink option)
+    const linkedHostAgents = createMemo(() => {
+        const hosts = state.hosts || [];
+        return hosts.filter(h => h.linkedNodeId).map(h => ({
+            id: h.id,
+            hostname: h.hostname || 'Unknown',
+            displayName: h.displayName,
+            linkedNodeId: h.linkedNodeId,
+            status: h.status,
+            version: h.agentVersion,
+            lastSeen: h.lastSeen ? new Date(h.lastSeen).getTime() : undefined,
+        }));
+    });
+    const hasLinkedAgents = createMemo(() => linkedHostAgents().length > 0);
+
     const getUpgradeCommand = (_hostname: string) => {
         const token = resolvedToken();
         const url = customAgentUrl() || agentUrl();
-        return `curl ${getCurlInsecureFlag()}-fsSL ${url}/install.sh | sudo bash -s -- --url ${url} --token ${token}${getInsecureFlag()}`;
+        return `curl ${getCurlInsecureFlag()}-fsSL ${url}/install.sh | bash -s -- --url ${url} --token ${token}${getInsecureFlag()}`;
     };
 
     const handleRemoveAgent = async (id: string, types: ('host' | 'docker')[]) => {
@@ -410,6 +433,18 @@ export const UnifiedAgents: Component = () => {
         }
     };
 
+    const handleRemoveKubernetesCluster = async (clusterId: string) => {
+        if (!confirm('Are you sure you want to remove this Kubernetes cluster? This will stop monitoring but will not uninstall the agent from the cluster.')) return;
+
+        try {
+            await MonitoringAPI.deleteKubernetesCluster(clusterId);
+            notificationStore.success('Kubernetes cluster removed from Pulse');
+        } catch (err) {
+            logger.error('Failed to remove Kubernetes cluster', err);
+            notificationStore.error('Failed to remove Kubernetes cluster');
+        }
+    };
+
     const handleAllowKubernetesReenroll = async (clusterId: string, name?: string) => {
         try {
             await MonitoringAPI.allowKubernetesClusterReenroll(clusterId);
@@ -419,6 +454,65 @@ export const UnifiedAgents: Component = () => {
             notificationStore.error('Failed to allow kubernetes re-enrollment');
         }
     };
+
+    const handleToggleCommands = async (hostId: string, enabled: boolean) => {
+        // Set optimistic/pending state immediately with timestamp
+        setPendingCommandConfig(prev => ({
+            ...prev,
+            [hostId]: { enabled, timestamp: Date.now() }
+        }));
+
+        try {
+            await MonitoringAPI.updateHostAgentConfig(hostId, { commandsEnabled: enabled });
+            notificationStore.success(`AI command execution ${enabled ? 'enabled' : 'disabled'}. Syncing with agent...`);
+        } catch (err) {
+            // On error, clear the pending state so toggle reverts
+            setPendingCommandConfig(prev => {
+                const next = { ...prev };
+                delete next[hostId];
+                return next;
+            });
+            logger.error('Failed to toggle AI commands', err);
+            notificationStore.error('Failed to update agent configuration');
+        }
+    };
+
+
+    // Clear pending state when agent reports matching the expected value, or after timeout
+    createEffect(() => {
+        const pending = pendingCommandConfig();
+        const hosts = state.hosts || [];
+        const now = Date.now();
+        const TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+
+        // Check if any pending config now matches the reported state or has timed out
+        let updated = false;
+        const newPending = { ...pending };
+        const timedOut: string[] = [];
+
+        for (const hostId of Object.keys(pending)) {
+            const entry = pending[hostId];
+            const host = hosts.find(h => h.id === hostId);
+
+            if (host && host.commandsEnabled === entry.enabled) {
+                // Agent confirmed the change
+                delete newPending[hostId];
+                updated = true;
+            } else if (now - entry.timestamp > TIMEOUT_MS) {
+                // Timed out waiting for agent
+                delete newPending[hostId];
+                timedOut.push(host?.hostname || hostId);
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            setPendingCommandConfig(newPending);
+            if (timedOut.length > 0) {
+                notificationStore.warning(`Config sync timed out for ${timedOut.join(', ')}. Agent may be offline.`);
+            }
+        }
+    });
 
     return (
         <div class="space-y-6">
@@ -569,6 +663,20 @@ export const UnifiedAgents: Component = () => {
                                     />
                                     Skip TLS certificate verification (self-signed certs)
                                 </label>
+                                <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer" title="Allow AI Patrol to execute diagnostic and fix commands on this agent (requires Pulse Pro)">
+                                    <input
+                                        type="checkbox"
+                                        checked={enableCommands()}
+                                        onChange={(e) => setEnableCommands(e.currentTarget.checked)}
+                                        class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                                    />
+                                    Enable AI command execution (for AI auto-fix)
+                                </label>
+                                <Show when={enableCommands()}>
+                                    <div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-200">
+                                        <span class="font-medium">AI commands enabled</span> — The agent will accept diagnostic and fix commands from Pulse AI features.
+                                    </div>
+                                </Show>
                             </div>
 
                             <div class="space-y-4">
@@ -592,6 +700,10 @@ export const UnifiedAgents: Component = () => {
                                                             const isBashScript = !cmd.includes('$env:') && !cmd.includes('irm');
                                                             if (insecureMode() && isBashScript) {
                                                                 cmd += getInsecureFlag();
+                                                            }
+                                                            // Add --enable-commands flag if enabled (issue #903)
+                                                            if (enableCommands() && isBashScript) {
+                                                                cmd += getEnableCommandsFlag();
                                                             }
                                                             return cmd;
                                                         };
@@ -774,6 +886,19 @@ export const UnifiedAgents: Component = () => {
                     </p>
                 </div>
 
+                {/* Note about linked agents */}
+                <Show when={hasLinkedAgents()}>
+                    <div class="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-900/20">
+                        <svg class="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-500 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <p class="text-xs text-blue-700 dark:text-blue-300">
+                            <span class="font-medium">{linkedHostAgents().length}</span> host agent{linkedHostAgents().length > 1 ? 's are' : ' is'} linked to Proxmox node{linkedHostAgents().length > 1 ? 's' : ''} and shown in the Dashboard with a <span class="font-medium text-purple-600 dark:text-purple-400">+Agent</span> badge.
+                            <a href="#linked-agents" class="ml-1 underline hover:text-blue-900 dark:hover:text-blue-100">Manage linked agents →</a>
+                        </p>
+                    </div>
+                </Show>
+
                 <Show when={hasLegacyAgents()}>
                     <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-900/20">
                         <div class="flex items-start gap-3">
@@ -818,14 +943,15 @@ export const UnifiedAgents: Component = () => {
                     </div>
                 </Show>
 
-                <Card padding="none" tone="glass" class="overflow-hidden rounded-lg">
-                    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <Card padding="none" tone="glass" class="overflow-x-auto rounded-lg">
+                    <table class="min-w-[800px] divide-y divide-gray-200 dark:divide-gray-700">
                         <thead class="bg-gray-50 dark:bg-gray-800">
                             <tr>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Hostname</th>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Type</th>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Status</th>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Version</th>
+                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">AI Commands</th>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Last Seen</th>
                                 <th scope="col" class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Actions</th>
                             </tr>
@@ -833,7 +959,7 @@ export const UnifiedAgents: Component = () => {
                         <tbody class="divide-y divide-gray-200 bg-white dark:divide-gray-700 dark:bg-gray-900">
                             <For each={allHosts()} fallback={
                                 <tr>
-                                    <td colspan="6" class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                                    <td colspan="7" class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                                         No agents installed yet.
                                     </td>
                                 </tr>
@@ -876,16 +1002,81 @@ export const UnifiedAgents: Component = () => {
                                                 </span>
                                             </Show>
                                         </td>
+                                        <td class="whitespace-nowrap px-4 py-3 text-sm">
+                                            <Show when={agent.types.includes('host')}
+                                                fallback={
+                                                    <span class="text-gray-400 dark:text-gray-500">—</span>
+                                                }
+                                            >
+                                                {(() => {
+                                                    // Use pending state if set, otherwise use agent-reported state
+                                                    const pending = pendingCommandConfig();
+                                                    const isPending = agent.id in pending;
+                                                    const effectiveEnabled = isPending ? pending[agent.id].enabled : agent.commandsEnabled;
+
+                                                    return (
+                                                        <div class="flex items-center gap-2">
+                                                            <button
+                                                                onClick={() => handleToggleCommands(agent.id, !effectiveEnabled)}
+                                                                disabled={isPending}
+                                                                class={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${isPending ? 'opacity-60 cursor-wait' : ''
+                                                                    } ${effectiveEnabled
+                                                                        ? 'bg-blue-600'
+                                                                        : 'bg-gray-200 dark:bg-gray-700'
+                                                                    }`}
+                                                                title={isPending
+                                                                    ? 'Syncing with agent...'
+                                                                    : effectiveEnabled
+                                                                        ? 'AI command execution enabled'
+                                                                        : 'AI command execution disabled'
+                                                                }
+                                                            >
+                                                                <span
+                                                                    class={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${effectiveEnabled ? 'translate-x-4' : 'translate-x-0'
+                                                                        }`}
+                                                                />
+                                                            </button>
+                                                            <Show when={isPending}>
+                                                                <svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                                </svg>
+                                                            </Show>
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </Show>
+                                        </td>
                                         <td class="whitespace-nowrap px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                                             {agent.lastSeen ? formatRelativeTime(agent.lastSeen) : '—'}
                                         </td>
                                         <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium">
-                                            <button
-                                                onClick={() => handleRemoveAgent(agent.id, agent.types)}
-                                                class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
-                                            >
-                                                Remove
-                                            </button>
+                                            <div class="flex items-center justify-end gap-3">
+                                                <button
+                                                    onClick={async () => {
+                                                        const cmd = getUninstallCommand();
+                                                        const success = await copyToClipboard(cmd);
+                                                        if (success) {
+                                                            notificationStore.success('Uninstall command copied');
+                                                        } else {
+                                                            notificationStore.error('Failed to copy');
+                                                        }
+                                                    }}
+                                                    class="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
+                                                    title="Copy uninstall command"
+                                                >
+                                                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleRemoveAgent(agent.id, agent.types)}
+                                                    class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 )}
@@ -903,8 +1094,8 @@ export const UnifiedAgents: Component = () => {
                     </p>
                 </div>
 
-                <Card padding="none" tone="glass" class="overflow-hidden rounded-lg">
-                    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <Card padding="none" tone="glass" class="overflow-x-auto rounded-lg">
+                    <table class="min-w-[800px] divide-y divide-gray-200 dark:divide-gray-700">
                         <thead class="bg-gray-50 dark:bg-gray-800">
                             <tr>
                                 <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Cluster</th>
@@ -943,7 +1134,7 @@ export const UnifiedAgents: Component = () => {
                                         </td>
                                         <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium">
                                             <button
-                                                onClick={() => handleRemoveAgent(cluster.id, 'kubernetes')}
+                                                onClick={() => handleRemoveKubernetesCluster(cluster.id)}
                                                 class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
                                             >
                                                 Remove
@@ -966,8 +1157,8 @@ export const UnifiedAgents: Component = () => {
                         </p>
                     </div>
 
-                    <Card padding="none" tone="glass" class="overflow-hidden rounded-lg">
-                        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <Card padding="none" tone="glass" class="overflow-x-auto rounded-lg">
+                        <table class="min-w-[800px] divide-y divide-gray-200 dark:divide-gray-700">
                             <thead class="bg-gray-50 dark:bg-gray-800">
                                 <tr>
                                     <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Hostname</th>
@@ -1015,8 +1206,8 @@ export const UnifiedAgents: Component = () => {
                         </p>
                     </div>
 
-                    <Card padding="none" tone="glass" class="overflow-hidden rounded-lg">
-                        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <Card padding="none" tone="glass" class="overflow-x-auto rounded-lg">
+                        <table class="min-w-[800px] divide-y divide-gray-200 dark:divide-gray-700">
                             <thead class="bg-gray-50 dark:bg-gray-800">
                                 <tr>
                                     <th scope="col" class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Cluster</th>

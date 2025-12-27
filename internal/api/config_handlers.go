@@ -1175,6 +1175,58 @@ func normalizeNodeHost(rawHost, nodeType string) (string, error) {
 	return parsed.String(), nil
 }
 
+// extractHostIP extracts the IP address from a host URL if it's an IP-based URL.
+// Returns empty string if the URL uses a hostname instead of an IP.
+func extractHostIP(hostURL string) string {
+	parsed, err := url.Parse(hostURL)
+	if err != nil {
+		return ""
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return ""
+	}
+	// Check if hostname is an IP address
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+// resolveHostnameToIP attempts to resolve a hostname URL to its first IP address.
+// Returns empty string if resolution fails or times out.
+func resolveHostnameToIP(hostURL string) string {
+	parsed, err := url.Parse(hostURL)
+	if err != nil {
+		return ""
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return ""
+	}
+
+	// Don't try to resolve if it's already an IP
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.String()
+	}
+
+	// Resolve with a short timeout to avoid blocking
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var resolver net.Resolver
+	addrs, err := resolver.LookupHost(ctx, hostname)
+	if err != nil || len(addrs) == 0 {
+		log.Debug().
+			Str("hostname", hostname).
+			Err(err).
+			Msg("Failed to resolve hostname for duplicate detection")
+		return ""
+	}
+
+	return addrs[0]
+}
+
 // disambiguateNodeName ensures a node name is unique by appending the host IP if needed.
 // This handles cases where multiple Proxmox hosts have the same hostname (e.g., "px1" on different networks).
 // Returns the original name if unique, or "name (ip)" if duplicates exist.
@@ -1504,7 +1556,7 @@ func (h *ConfigHandlers) HandleAddNode(w http.ResponseWriter, r *http.Request) {
 		// Parse PBS authentication details
 		var pbsUser string
 		var pbsPassword string
-		var pbsTokenName string
+	var pbsTokenName string
 		var pbsTokenValue string
 
 		// Determine authentication method
@@ -1515,12 +1567,55 @@ func (h *ConfigHandlers) HandleAddNode(w http.ResponseWriter, r *http.Request) {
 			// Token name might contain the full format (user@realm!tokenname)
 			// The backend PBS client will parse this
 		} else if req.Password != "" {
-			// Using password authentication - don't store token fields
+			// Using password authentication - try to create a token via API
+			// This enables turnkey setup for Docker/containerized PBS
 			pbsUser = req.User
-			pbsPassword = req.Password
-			// Ensure user has realm for PBS
 			if pbsUser != "" && !strings.Contains(pbsUser, "@") {
 				pbsUser = pbsUser + "@pbs" // Default to @pbs realm if not specified
+			}
+
+			log.Info().
+				Str("host", host).
+				Str("user", pbsUser).
+				Msg("PBS: Attempting turnkey token creation via API")
+
+			// Try to create a token using the provided credentials
+			pbsClient, err := pbs.NewClient(pbs.ClientConfig{
+				Host:      host,
+				User:      pbsUser,
+				Password:  req.Password,
+				VerifySSL: false, // Self-signed certs common
+			})
+
+			if err != nil {
+				log.Warn().Err(err).Str("host", host).Msg("PBS: Failed to connect for token creation, falling back to password auth")
+				// Fallback to password auth
+				pbsPassword = req.Password
+			} else {
+				// Generate a unique token name
+				hostname, _ := os.Hostname()
+				if hostname == "" {
+					hostname = "pulse"
+				}
+				timestamp := time.Now().Unix()
+				tokenName := fmt.Sprintf("pulse-%s-%d", hostname, timestamp)
+
+				tokenID, tokenSecret, err := pbsClient.SetupMonitoringAccess(context.Background(), tokenName)
+				if err != nil {
+					log.Warn().Err(err).Str("host", host).Msg("PBS: Failed to create token via API, falling back to password auth")
+					// Fallback to password auth
+					pbsPassword = req.Password
+				} else {
+					// Successfully created token - use it instead of password
+					pbsTokenName = tokenID
+					pbsTokenValue = tokenSecret
+					pbsUser = ""      // Clear password auth fields
+					pbsPassword = ""
+					log.Info().
+						Str("host", host).
+						Str("tokenID", tokenID).
+						Msg("PBS: Successfully created monitoring token via API")
+				}
 			}
 		}
 
@@ -5915,8 +6010,12 @@ func (h *ConfigHandlers) HandleAutoRegister(w http.ResponseWriter, r *http.Reque
 	// Also match by name+tokenID for DHCP scenarios where IP changed but it's the same host.
 	// Different physical hosts can have the same hostname (e.g., "px1" on different networks)
 	// but they'll have different tokens, so we only merge if BOTH name AND token match.
-	// See: Issue #891, #104, and multiple fix attempts in Dec 2025.
+	// See: Issue #891, #104, #924, and multiple fix attempts in Dec 2025.
 	existingIndex := -1
+
+	// Extract IP from the new host URL for DNS comparison
+	newHostIP := extractHostIP(host)
+
 	if req.Type == "pve" {
 		for i, node := range h.config.PVEInstances {
 			if node.Host == host {
@@ -5935,6 +6034,26 @@ func (h *ConfigHandlers) HandleAutoRegister(w http.ResponseWriter, r *http.Reque
 					Msg("Detected IP change for existing node - updating host")
 				break
 			}
+			// Agent registration: check if existing hostname resolves to the new IP
+			// This catches the case where a node was manually added by hostname and
+			// then the agent registers using the IP address. (Issue #924)
+			if req.Source == "agent" && newHostIP != "" {
+				existingHostIP := extractHostIP(node.Host)
+				if existingHostIP == "" {
+					// Existing config uses hostname, try to resolve it
+					existingHostIP = resolveHostnameToIP(node.Host)
+				}
+				if existingHostIP == newHostIP {
+					existingIndex = i
+					log.Info().
+						Str("existingHost", node.Host).
+						Str("newHost", host).
+						Str("resolvedIP", newHostIP).
+						Str("node", node.Name).
+						Msg("Agent registration detected existing node by IP resolution - updating instead of creating duplicate")
+					break
+				}
+			}
 		}
 	} else {
 		for i, node := range h.config.PBSInstances {
@@ -5951,6 +6070,23 @@ func (h *ConfigHandlers) HandleAutoRegister(w http.ResponseWriter, r *http.Reque
 					Str("node", req.ServerName).
 					Msg("Detected IP change for existing node - updating host")
 				break
+			}
+			// Agent registration: check if existing hostname resolves to the new IP
+			if req.Source == "agent" && newHostIP != "" {
+				existingHostIP := extractHostIP(node.Host)
+				if existingHostIP == "" {
+					existingHostIP = resolveHostnameToIP(node.Host)
+				}
+				if existingHostIP == newHostIP {
+					existingIndex = i
+					log.Info().
+						Str("existingHost", node.Host).
+						Str("newHost", host).
+						Str("resolvedIP", newHostIP).
+						Str("node", node.Name).
+						Msg("Agent registration detected existing node by IP resolution - updating instead of creating duplicate")
+					break
+				}
 			}
 		}
 	}
@@ -6323,11 +6459,40 @@ func (h *ConfigHandlers) handleSecureAutoRegister(w http.ResponseWriter, _ *http
 		fullTokenID = fmt.Sprintf("pulse-monitor@pam!%s", tokenName)
 		// Note: This would require implementing token creation in the proxmox package
 		// For now, we'll return the token for the script to create
+		// TODO: Implement PVE token creation via API
 	} else if req.Type == "pbs" {
-		// For PBS, create token via API
-		fullTokenID = fmt.Sprintf("pulse-monitor@pbs!%s", tokenName)
-		// Note: This would require implementing token creation in the pbs package
-		// For now, we'll return the token for the script to create
+		// For PBS, create token via API using the new client methods
+		log.Info().
+			Str("host", host).
+			Str("username", req.Username).
+			Msg("Creating PBS token via API")
+
+		pbsClient, err := pbs.NewClient(pbs.ClientConfig{
+			Host:      host,
+			User:      req.Username,
+			Password:  req.Password,
+			VerifySSL: false, // Self-signed certs common
+		})
+		if err != nil {
+			log.Error().Err(err).Str("host", host).Msg("Failed to create PBS client")
+			http.Error(w, fmt.Sprintf("Failed to connect to PBS: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Use the turnkey method to create user + token
+		tokenID, tokenSecret, err := pbsClient.SetupMonitoringAccess(context.Background(), tokenName)
+		if err != nil {
+			log.Error().Err(err).Str("host", host).Msg("Failed to create PBS monitoring access")
+			http.Error(w, fmt.Sprintf("Failed to create token: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		fullTokenID = tokenID
+		tokenValue = tokenSecret
+		log.Info().
+			Str("host", host).
+			Str("tokenID", fullTokenID).
+			Msg("Successfully created PBS token via API")
 	}
 
 	if createErr != nil {

@@ -599,6 +599,7 @@ type Monitor struct {
 	tempCollector              *TemperatureCollector // SSH-based temperature collector
 	guestMetadataStore         *config.GuestMetadataStore
 	dockerMetadataStore        *config.DockerMetadataStore
+	hostMetadataStore          *config.HostMetadataStore
 	mu                         sync.RWMutex
 	startTime                  time.Time
 	rateTracker                *RateTracker
@@ -1209,6 +1210,15 @@ func (m *Monitor) RemoveHostAgent(hostID string) (models.Host, error) {
 
 	m.state.RemoveConnectionHealth(hostConnectionPrefix + hostID)
 
+	// Clear LinkedHostAgentID from any nodes that were linked to this host agent
+	unlinkedCount := m.state.UnlinkNodesFromHostAgent(hostID)
+	if unlinkedCount > 0 {
+		log.Info().
+			Str("hostID", hostID).
+			Int("unlinkedNodes", unlinkedCount).
+			Msg("Cleared host agent links from PVE nodes")
+	}
+
 	log.Info().
 		Str("host", host.Hostname).
 		Str("hostID", hostID).
@@ -1220,6 +1230,81 @@ func (m *Monitor) RemoveHostAgent(hostID string) (models.Host, error) {
 	}
 
 	return host, nil
+}
+
+// UnlinkHostAgent removes the link between a host agent and its PVE node.
+// The agent will continue to report but will appear in the Managed Agents table
+// instead of being merged with the PVE node in the Dashboard.
+func (m *Monitor) UnlinkHostAgent(hostID string) error {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+
+	if !m.state.UnlinkHostAgent(hostID) {
+		return fmt.Errorf("host not found or not linked to a node")
+	}
+
+	log.Info().
+		Str("hostID", hostID).
+		Msg("Unlinked host agent from PVE node")
+
+	return nil
+}
+
+// HostAgentConfig represents server-side configuration for a host agent.
+type HostAgentConfig struct {
+	CommandsEnabled *bool `json:"commandsEnabled,omitempty"` // nil = use agent default
+}
+
+// GetHostAgentConfig returns the server-side configuration for a host agent.
+// The agent can poll this to apply remote config overrides.
+func (m *Monitor) GetHostAgentConfig(hostID string) HostAgentConfig {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" || m.hostMetadataStore == nil {
+		return HostAgentConfig{}
+	}
+
+	meta := m.hostMetadataStore.Get(hostID)
+	if meta == nil {
+		return HostAgentConfig{}
+	}
+
+	return HostAgentConfig{
+		CommandsEnabled: meta.CommandsEnabled,
+	}
+}
+
+// UpdateHostAgentConfig updates the server-side configuration for a host agent.
+// This allows the UI to remotely enable/disable features on agents.
+func (m *Monitor) UpdateHostAgentConfig(hostID string, commandsEnabled *bool) error {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" {
+		return fmt.Errorf("host id is required")
+	}
+
+	if m.hostMetadataStore == nil {
+		return fmt.Errorf("host metadata store not initialized")
+	}
+
+	// Get existing metadata or create new
+	meta := m.hostMetadataStore.Get(hostID)
+	if meta == nil {
+		meta = &config.HostMetadata{ID: hostID}
+	}
+
+	meta.CommandsEnabled = commandsEnabled
+
+	if err := m.hostMetadataStore.Set(hostID, meta); err != nil {
+		return fmt.Errorf("failed to save host config: %w", err)
+	}
+
+	log.Info().
+		Str("hostId", hostID).
+		Interface("commandsEnabled", commandsEnabled).
+		Msg("Host agent config updated")
+
+	return nil
 }
 
 // HideDockerHost marks a docker host as hidden without removing it from state.
@@ -2170,6 +2255,7 @@ func (m *Monitor) ApplyHostReport(report agentshost.Report, tokenRecord *config.
 			TemperatureCelsius: cloneStringFloatMap(report.Sensors.TemperatureCelsius),
 			FanRPM:             cloneStringFloatMap(report.Sensors.FanRPM),
 			Additional:         cloneStringFloatMap(report.Sensors.Additional),
+			SMART:              convertAgentSMARTToModels(report.Sensors.SMART),
 		},
 		RAID:            raid,
 		Ceph:            cephData,
@@ -2178,6 +2264,7 @@ func (m *Monitor) ApplyHostReport(report agentshost.Report, tokenRecord *config.
 		IntervalSeconds: report.Agent.IntervalSeconds,
 		LastSeen:        timestamp,
 		AgentVersion:    strings.TrimSpace(report.Agent.Version),
+		CommandsEnabled: report.Agent.CommandsEnabled,
 		Tags:            append([]string(nil), report.Tags...),
 		IsLegacy:        isLegacyHostAgent(report.Agent.Type),
 	}
@@ -3077,6 +3164,7 @@ func New(cfg *config.Config) (*Monitor, error) {
 		tempCollector:              tempCollector,
 		guestMetadataStore:         config.NewGuestMetadataStore(cfg.DataPath),
 		dockerMetadataStore:        config.NewDockerMetadataStore(cfg.DataPath),
+		hostMetadataStore:          config.NewHostMetadataStore(cfg.DataPath),
 		startTime:                  time.Now(),
 		rateTracker:                NewRateTracker(),
 		metricsHistory:             NewMetricsHistory(1000, 24*time.Hour), // Keep up to 1000 points or 24 hours
@@ -9545,6 +9633,27 @@ func isLegacyDockerAgent(agentType string) bool {
 	// Unified agent reports type="unified"
 	// Legacy standalone agents have empty type
 	return agentType != "unified"
+}
+
+// convertAgentSMARTToModels converts agent report S.M.A.R.T. data to the models.HostDiskSMART format.
+func convertAgentSMARTToModels(smart []agentshost.DiskSMART) []models.HostDiskSMART {
+	if len(smart) == 0 {
+		return nil
+	}
+	result := make([]models.HostDiskSMART, 0, len(smart))
+	for _, disk := range smart {
+		result = append(result, models.HostDiskSMART{
+			Device:      disk.Device,
+			Model:       disk.Model,
+			Serial:      disk.Serial,
+			WWN:         disk.WWN,
+			Type:        disk.Type,
+			Temperature: disk.Temperature,
+			Health:      disk.Health,
+			Standby:     disk.Standby,
+		})
+	}
+	return result
 }
 
 // convertAgentCephToModels converts agent report Ceph data to the models.HostCephCluster format.

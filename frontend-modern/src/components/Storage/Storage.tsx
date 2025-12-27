@@ -4,6 +4,7 @@ import { useWebSocket } from '@/App';
 import { getAlertStyles } from '@/utils/alerts';
 import { formatBytes, formatPercent } from '@/utils/format';
 import type { Storage as StorageType, CephCluster } from '@/types/api';
+import { StatusDot } from '@/components/shared/StatusDot';
 import { ComponentErrorBoundary } from '@/components/ErrorBoundary';
 import { UnifiedNodeSelector } from '@/components/shared/UnifiedNodeSelector';
 import { StorageFilter } from './StorageFilter';
@@ -18,6 +19,8 @@ import { getNodeDisplayName } from '@/utils/nodes';
 import { usePersistentSignal } from '@/hooks/usePersistentSignal';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useAlertsActivation } from '@/stores/alertsActivation';
+import { useColumnVisibility, type ColumnDef } from '@/hooks/useColumnVisibility';
+import { STORAGE_KEYS } from '@/utils/localStorage';
 
 type StorageSortKey = 'name' | 'node' | 'type' | 'status' | 'usage' | 'free' | 'total';
 
@@ -60,6 +63,24 @@ const Storage: Component = () => {
         raw === 'all' || raw === 'available' || raw === 'offline' ? raw : 'all',
     },
   );
+
+  // Column definitions for storage table
+  const STORAGE_COLUMNS: ColumnDef[] = [
+    { id: 'type', label: 'Type', priority: 'secondary', toggleable: true },
+    { id: 'content', label: 'Content', priority: 'supplementary', toggleable: true },
+    { id: 'status', label: 'Status', priority: 'primary', toggleable: true },
+    { id: 'shared', label: 'Shared', priority: 'detailed', toggleable: true },
+    { id: 'free', label: 'Free', priority: 'supplementary', toggleable: true },
+    { id: 'total', label: 'Total', priority: 'secondary', toggleable: true },
+  ];
+
+  // Column visibility management
+  const columnVisibility = useColumnVisibility(
+    STORAGE_KEYS.STORAGE_HIDDEN_COLUMNS,
+    STORAGE_COLUMNS
+  );
+
+  const isColumnVisible = (id: string) => !columnVisibility.isHiddenByUser(id);
 
   // PERFORMANCE: Debounce search term to prevent jank during rapid typing
   const debouncedSearchTerm = useDebouncedValue(() => searchTerm(), 200);
@@ -601,6 +622,7 @@ const Storage: Component = () => {
           statusFilter={statusFilter}
           setStatusFilter={setStatusFilter}
           searchInputRef={(el) => (searchInputRef = el)}
+          columnVisibility={columnVisibility}
         />
       </Show>
 
@@ -788,36 +810,46 @@ const Storage: Component = () => {
                 <style>{`
                 .overflow-x-auto::-webkit-scrollbar { display: none; }
               `}</style>
-                <table class="w-full">
+                <table class="w-full" style={{ "min-width": "800px" }}>
                   <thead>
                     <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600">
-                      <th class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-auto">
+                      <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-auto">
                         Storage
                       </th>
-                      <th class="hidden md:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
-                        Type
-                      </th>
-                      <th class="hidden lg:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[15%]">
-                        Content
-                      </th>
-                      <th class="hidden sm:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
-                        Status
-                      </th>
-                      <Show when={viewMode() === 'node'}>
-                        <th class="hidden lg:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[8%]">
+                      <Show when={isColumnVisible('type')}>
+                        <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
+                          Type
+                        </th>
+                      </Show>
+                      <Show when={isColumnVisible('content')}>
+                        <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[15%]">
+                          Content
+                        </th>
+                      </Show>
+                      <Show when={isColumnVisible('status')}>
+                        <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%] min-w-[70px]">
+                          Status
+                        </th>
+                      </Show>
+                      <Show when={viewMode() === 'node' && isColumnVisible('shared')}>
+                        <th class="hidden sm:table-cell px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[6%]">
                           Shared
                         </th>
                       </Show>
-                      <th class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[25%] min-w-[150px]">
+                      <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[25%] min-w-[130px]">
                         Usage
                       </th>
-                      <th class="hidden sm:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
-                        Free
-                      </th>
-                      <th class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
-                        Total
-                      </th>
-                      <th class="px-2 py-1.5 w-8"></th>
+                      <Show when={isColumnVisible('free')}>
+                        <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
+                          Free
+                        </th>
+                      </Show>
+                      <Show when={isColumnVisible('total')}>
+                        <th class="px-1.5 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider w-[10%]">
+                          Total
+                        </th>
+                      </Show>
+                      <th class="px-1.5 py-1.5 w-8"></th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
@@ -1064,12 +1096,12 @@ const Storage: Component = () => {
                                 const firstCellClass = createMemo(() => {
                                   if (viewMode() === 'node') {
                                     return firstCellHasIndicator()
-                                      ? 'p-0.5 pl-7 pr-1.5'
-                                      : 'p-0.5 pl-8 pr-1.5';
+                                      ? 'p-0.5 pl-6 pr-1.5'
+                                      : 'p-0.5 pl-7 pr-1.5';
                                   }
                                   return firstCellHasIndicator()
-                                    ? 'p-0.5 pl-3 pr-1.5'
-                                    : 'p-0.5 pl-3 pr-1.5';
+                                    ? 'p-0.5 pl-2 pr-1.5'
+                                    : 'p-0.5 pl-2 pr-1.5';
                                 });
 
                                 const toggleDrawer = () => {
@@ -1088,9 +1120,9 @@ const Storage: Component = () => {
                                       aria-expanded={canExpand() && isExpanded() ? 'true' : 'false'}
                                     >
                                       <td class={`${firstCellClass()} align-middle`}>
-                                        <div class="flex items-center gap-2 min-w-0">
+                                        <div class="flex items-center gap-1.5 min-w-0">
                                           <span
-                                            class={`text-sm font-medium text-gray-900 dark:text-gray-100 truncate ${canExpand() ? 'max-w-[180px]' : 'max-w-[200px]'
+                                            class={`text-xs sm:text-sm font-medium text-gray-900 dark:text-gray-100 truncate ${canExpand() ? 'max-w-[140px] sm:max-w-[180px]' : 'max-w-[160px] sm:max-w-[200px]'
                                               }`}
                                             title={storage.name}
                                           >
@@ -1098,7 +1130,7 @@ const Storage: Component = () => {
                                           </span>
                                           {/* ZFS Health Map */}
                                           <Show when={zfsPool && zfsPool.devices && zfsPool.devices.length > 0}>
-                                            <div class="mx-1.5">
+                                            <div class="mx-1">
                                               <ZFSHealthMap pool={zfsPool!} />
                                             </div>
                                           </Show>
@@ -1154,31 +1186,50 @@ const Storage: Component = () => {
                                           </Show>
                                         </div>
                                       </td>
-                                      <td class="hidden md:table-cell p-0.5 px-1.5">
-                                        <span class="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">
-                                          {storage.type}
-                                        </span>
-                                      </td>
-                                      <td class="hidden lg:table-cell p-0.5 px-1.5">
-                                        <span
-                                          class="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap truncate max-w-[220px]"
-                                          title={storage.content || '-'}
-                                        >
-                                          {storage.content || '-'}
-                                        </span>
-                                      </td>
-                                      <td class="hidden sm:table-cell p-0.5 px-1.5 text-xs whitespace-nowrap">
-                                        <span
-                                          class={`${storage.status === 'available'
-                                            ? 'text-green-600 dark:text-green-400'
-                                            : 'text-red-600 dark:text-red-400'
-                                            }`}
-                                        >
-                                          {storage.status || 'unknown'}
-                                        </span>
-                                      </td>
-                                      <Show when={viewMode() === 'node'}>
-                                        <td class="hidden lg:table-cell p-0.5 px-1.5">
+                                      <Show when={isColumnVisible('type')}>
+                                        <td class="p-0.5 px-1.5">
+                                          <div class="flex items-center gap-1.5">
+                                            <span class="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                                              {storage.type}
+                                            </span>
+                                            <Show when={storage.shared}>
+                                              <svg class="h-3 w-3 text-blue-500 sm:hidden" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fill-rule="evenodd" d="M3 6a3 3 0 013-3h10a1 1 0 01.8 1.6L14.25 8l2.55 3.4A1 1 0 0116 13H6a1 1 0 00-1 1v3a1 1 0 11-2 0V6z" clip-rule="evenodd" />
+                                              </svg>
+                                            </Show>
+                                          </div>
+                                        </td>
+                                      </Show>
+                                      <Show when={isColumnVisible('content')}>
+                                        <td class="p-0.5 px-1.5">
+                                          <span
+                                            class="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap truncate max-w-[220px]"
+                                            title={storage.content || '-'}
+                                          >
+                                            {storage.content || '-'}
+                                          </span>
+                                        </td>
+                                      </Show>
+                                      <Show when={isColumnVisible('status')}>
+                                        <td class="p-0.5 px-1.5 text-xs whitespace-nowrap">
+                                          <div class="flex items-center gap-1.5">
+                                            <StatusDot
+                                              variant={storage.status === 'available' ? 'success' : 'danger'}
+                                              size="xs"
+                                            />
+                                            <span
+                                              class={`${storage.status === 'available'
+                                                ? 'text-green-600 dark:text-green-400'
+                                                : 'text-red-600 dark:text-red-400'
+                                                }`}
+                                            >
+                                              {storage.status || 'unknown'}
+                                            </span>
+                                          </div>
+                                        </td>
+                                      </Show>
+                                      <Show when={viewMode() === 'node' && isColumnVisible('shared')}>
+                                        <td class="hidden sm:table-cell p-0.5 px-1.5">
                                           <span class="text-xs text-gray-600 dark:text-gray-400">
                                             {storage.shared ? '✓' : '-'}
                                           </span>
@@ -1193,12 +1244,16 @@ const Storage: Component = () => {
                                           zfsPool={storage.zfsPool}
                                         />
                                       </td>
-                                      <td class="hidden sm:table-cell p-0.5 px-1.5 text-xs whitespace-nowrap">
-                                        {formatBytes(storage.free || 0, 0)}
-                                      </td>
-                                      <td class="p-0.5 px-1.5 text-xs whitespace-nowrap">
-                                        {formatBytes(storage.total || 0, 0)}
-                                      </td>
+                                      <Show when={isColumnVisible('free')}>
+                                        <td class="p-0.5 px-1.5 text-xs whitespace-nowrap">
+                                          {formatBytes(storage.free || 0, 0)}
+                                        </td>
+                                      </Show>
+                                      <Show when={isColumnVisible('total')}>
+                                        <td class="p-0.5 px-1.5 text-xs whitespace-nowrap">
+                                          {formatBytes(storage.total || 0, 0)}
+                                        </td>
+                                      </Show>
                                       <td class="p-0.5 px-1.5"></td>
                                     </tr>
                                     <Show when={isCephStorage() && isExpanded()}>

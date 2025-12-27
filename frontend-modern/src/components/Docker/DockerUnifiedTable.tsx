@@ -1161,16 +1161,7 @@ const DockerContainerRow: Component<{
   };
 
   const cpuPercent = () => Math.max(0, Math.min(100, container.cpuPercent ?? 0));
-  const memPercent = () => Math.max(0, Math.min(100, container.memoryPercent ?? 0));
   const metricsKey = buildMetricKey('dockerContainer', container.id);
-  const memUsageLabel = () => {
-    if (!container.memoryUsageBytes) return undefined;
-    const used = formatBytes(container.memoryUsageBytes, 0);
-    const limit = container.memoryLimitBytes
-      ? formatBytes(container.memoryLimitBytes, 0)
-      : undefined;
-    return limit ? `${used} / ${limit}` : used;
-  };
 
   const uptime = () => (container.uptimeSeconds ? formatUptime(container.uptimeSeconds) : '—');
   const restarts = () => container.restartCount ?? 0;
@@ -1322,7 +1313,7 @@ const DockerContainerRow: Component<{
               type="cpu"
               resourceId={metricsKey}
               isRunning={isRunning() && (container.cpuPercent ?? 0) > 0}
-              showMobile={props.isMobile()}
+              showMobile={false}
               class="w-full"
             />
           </div>
@@ -1334,20 +1325,7 @@ const DockerContainerRow: Component<{
 
         return (
           <div class="px-2 py-0.5 flex items-center overflow-hidden">
-            <Show when={props.isMobile()}>
-              <div class="md:hidden w-full">
-                <ResponsiveMetricCell
-                  value={memPercent()}
-                  type="memory"
-                  sublabel={memUsageLabel()}
-                  resourceId={metricsKey}
-                  isRunning={isRunning() && (container.memoryUsageBytes ?? 0) > 0}
-                  showMobile={true}
-                  class="w-full"
-                />
-              </div>
-            </Show>
-            <div class="hidden md:block w-full">
+            <div class="w-full">
               <StackedMemoryBar
                 used={container.memoryUsageBytes || 0}
                 total={memoryTotal()}
@@ -1370,7 +1348,7 @@ const DockerContainerRow: Component<{
                   resourceId={metricsKey}
                   sublabel={diskSublabel() ?? diskUsageLabel()}
                   isRunning={true}
-                  showMobile={props.isMobile()}
+                  showMobile={false}
                   class="w-full"
                 />
               </Show>
@@ -1415,7 +1393,9 @@ const DockerContainerRow: Component<{
             <td
               class={`py-0.5 align-middle whitespace-nowrap ${column.id === 'resource' ? 'max-w-[300px]' : ''}`}
               style={{
-                "min-width": column.id === 'cpu' || column.id === 'memory' ? '140px' : undefined,
+                "min-width": (column.id === 'cpu' || column.id === 'memory') ? (props.isMobile() ? '60px' : '140px') : undefined,
+                "width": (column.id === 'cpu' || column.id === 'memory') && !props.isMobile() ? '140px' : undefined,
+                "max-width": (column.id === 'cpu' || column.id === 'memory') && !props.isMobile() ? '140px' : undefined
               }}
             >
               {renderCell(column)}
@@ -1769,6 +1749,40 @@ const DockerContainerRow: Component<{
                           >
                             {key}
                             <Show when={value}>: {value}</Show>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={container.env && container.env.length > 0}>
+                  <div class="rounded border border-gray-200 bg-white/70 p-3 shadow-sm dark:border-gray-600/70 dark:bg-gray-900/30">
+                    <div class="text-[11px] font-medium uppercase tracking-wide text-gray-700 dark:text-gray-200">
+                      Environment
+                    </div>
+                    <div class="mt-1 flex flex-wrap gap-1 text-[11px] text-gray-600 dark:text-gray-300">
+                      {container.env!.map((envVar) => {
+                        const eqIndex = envVar.indexOf('=');
+                        if (eqIndex === -1) return null;
+                        const name = envVar.substring(0, eqIndex);
+                        const value = envVar.substring(eqIndex + 1);
+                        const isMasked = value === '***';
+                        return (
+                          <span
+                            class={`max-w-full truncate rounded px-1.5 py-0.5 ${isMasked
+                              ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+                              : 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-200'
+                              }`}
+                            title={isMasked ? `${name} (masked for security)` : `${name}=${value}`}
+                          >
+                            {name}
+                            <Show when={!isMasked && value}>
+                              <span class="text-green-600 dark:text-green-300">={value}</span>
+                            </Show>
+                            <Show when={isMasked}>
+                              <span class="text-amber-500 dark:text-amber-400 ml-0.5">🔒</span>
+                            </Show>
                           </span>
                         );
                       })}
@@ -2245,7 +2259,9 @@ const DockerServiceRow: Component<{
             <td
               class={`py-0.5 align-middle whitespace-nowrap ${column.id === 'resource' ? 'max-w-[300px]' : ''}`}
               style={{
-                "min-width": column.id === 'cpu' || column.id === 'memory' ? '140px' : undefined,
+                "min-width": (column.id === 'cpu' || column.id === 'memory') ? (props.isMobile() ? '60px' : '140px') : undefined,
+                "width": (column.id === 'cpu' || column.id === 'memory') && !props.isMobile() ? '140px' : undefined,
+                "max-width": (column.id === 'cpu' || column.id === 'memory') && !props.isMobile() ? '140px' : undefined
               }}
             >
               {renderCell(column)}
@@ -2790,7 +2806,7 @@ const DockerUnifiedTable: Component<DockerUnifiedTableProps> = (props) => {
       >
         <Card padding="none" tone="glass" class="overflow-hidden">
           <div class="overflow-x-auto">
-            <table class="w-full border-collapse whitespace-nowrap">
+            <table class="w-full border-collapse whitespace-nowrap" style={{ "min-width": "800px" }}>
               <thead>
                 <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 text-[11px] sm:text-xs font-medium uppercase tracking-wider sticky top-0 z-20">
                   <For each={DOCKER_COLUMNS}>
@@ -2801,7 +2817,7 @@ const DockerUnifiedTable: Component<DockerUnifiedTableProps> = (props) => {
                       return (
                         <th
                           class={`${isResource ? 'pl-4 sm:pl-5 lg:pl-6 pr-2' : 'px-2'} py-1 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 text-left font-medium whitespace-nowrap`}
-                          style={{ "min-width": col.id === 'cpu' || col.id === 'memory' ? '140px' : undefined }}
+                          style={{ "min-width": (col.id === 'cpu' || col.id === 'memory' || col.id === 'disk') ? (isMobile() ? '60px' : '140px') : undefined, "width": (col.id === 'cpu' || col.id === 'memory' || col.id === 'disk') && !isMobile() ? '140px' : undefined, "max-width": (col.id === 'cpu' || col.id === 'memory' || col.id === 'disk') && !isMobile() ? '140px' : undefined }}
                           onClick={() => colSortKey && handleSort(colSortKey)}
                           onKeyDown={(e) => e.key === 'Enter' && colSortKey && handleSort(colSortKey)}
                           tabIndex={0}

@@ -369,6 +369,18 @@ func (h *AISettingsHandler) HandleUpdateAISettings(w http.ResponseWriter, r *htt
 	}
 
 	if req.PatrolAutoFix != nil {
+		// Auto-fix requires Pro license with ai_autofix feature
+		if *req.PatrolAutoFix && !h.aiService.HasLicenseFeature(ai.FeatureAIAutoFix) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":       "license_required",
+				"message":     "AI Auto-Fix requires Pulse Pro",
+				"feature":     ai.FeatureAIAutoFix,
+				"upgrade_url": "https://pulserelay.pro",
+			})
+			return
+		}
 		settings.PatrolAutoFix = *req.PatrolAutoFix
 	}
 
@@ -377,6 +389,18 @@ func (h *AISettingsHandler) HandleUpdateAISettings(w http.ResponseWriter, r *htt
 	}
 
 	if req.AutonomousMode != nil {
+		// Autonomous mode requires Pro license with ai_autofix feature
+		if *req.AutonomousMode && !h.aiService.HasLicenseFeature(ai.FeatureAIAutoFix) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":       "license_required",
+				"message":     "Autonomous Mode requires Pulse Pro",
+				"feature":     ai.FeatureAIAutoFix,
+				"upgrade_url": "https://pulserelay.pro",
+			})
+			return
+		}
 		settings.AutonomousMode = *req.AutonomousMode
 	}
 
@@ -2715,6 +2739,48 @@ func (h *AISettingsHandler) HandleSuppressFinding(w http.ResponseWriter, r *http
 
 	if err := utils.WriteJSONResponse(w, response); err != nil {
 		log.Error().Err(err).Msg("Failed to write suppress response")
+	}
+}
+
+// HandleClearAllFindings clears all AI findings (DELETE /api/ai/patrol/findings)
+// This allows users to clear accumulated findings, especially useful for users who
+// accumulated findings before the patrol-without-AI bug was fixed.
+func (h *AISettingsHandler) HandleClearAllFindings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Require authentication (already wrapped by RequireAuth in router)
+	if !CheckAuth(h.config, w, r) {
+		return
+	}
+
+	// Check for confirm parameter
+	if r.URL.Query().Get("confirm") != "true" {
+		http.Error(w, "confirm=true query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	patrol := h.aiService.GetPatrolService()
+	if patrol == nil {
+		http.Error(w, "Patrol service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	findings := patrol.GetFindings()
+	count := findings.ClearAll()
+
+	log.Info().Int("count", count).Msg("Cleared all AI findings")
+
+	response := map[string]interface{}{
+		"success": true,
+		"cleared": count,
+		"message": fmt.Sprintf("Cleared %d findings", count),
+	}
+
+	if err := utils.WriteJSONResponse(w, response); err != nil {
+		log.Error().Err(err).Msg("Failed to write clear findings response")
 	}
 }
 

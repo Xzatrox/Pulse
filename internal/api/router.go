@@ -208,14 +208,36 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/api/agents/host/lookup", RequireAuth(r.config, RequireScope(config.ScopeHostReport, r.hostAgentHandlers.HandleLookup)))
 	r.mux.HandleFunc("/api/agents/osquery/report", RequireAuth(r.config, RequireScope(config.ScopeOsqueryReport, osqueryAgentHandlers.HandleReport)))
 	r.mux.HandleFunc("/api/osquery/reports", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, osqueryAgentHandlers.HandleAllReports)))
-	r.mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasSuffix(req.URL.Path, "/") {
-			RequireAdmin(r.config, RequireScope(config.ScopeHostManage, r.hostAgentHandlers.HandleDeleteHost))(w, req)
-		} else {
-			http.NotFound(w, req)
+	r.mux.HandleFunc("/api/agents/host/uninstall", RequireAuth(r.config, RequireScope(config.ScopeHostReport, r.hostAgentHandlers.HandleUninstall)))
+	r.mux.HandleFunc("/api/agents/host/unlink", RequireAdmin(r.config, RequireScope(config.ScopeHostManage, r.hostAgentHandlers.HandleUnlink)))
+	// Host agent management routes - config endpoint is accessible by agents (GET) and admins (PATCH)
+	r.mux.HandleFunc("/api/agents/host/", RequireAuth(r.config, func(w http.ResponseWriter, req *http.Request) {
+		// Route /api/agents/host/{id}/config to HandleConfig
+		if strings.HasSuffix(req.URL.Path, "/config") {
+			// GET is for agents to fetch config (host_report scope)
+			// PATCH is for UI to update config (host_manage scope, admin only)
+			if req.Method == http.MethodGet {
+				if !ensureScope(w, req, config.ScopeHostReport) {
+					return
+				}
+			} else if req.Method == http.MethodPatch {
+				if !ensureScope(w, req, config.ScopeHostManage) {
+					return
+				}
+			}
+			r.hostAgentHandlers.HandleConfig(w, req)
+			return
 		}
-	})
-	r.mux.HandleFunc("/api/agents/host/", RequireAdmin(r.config, RequireScope(config.ScopeHostManage, r.hostAgentHandlers.HandleDeleteHost)))
+		// Route DELETE /api/agents/host/{id} to HandleDeleteHost (host_manage scope)
+		if req.Method == http.MethodDelete {
+			if !ensureScope(w, req, config.ScopeHostManage) {
+				return
+			}
+			r.hostAgentHandlers.HandleDeleteHost(w, req)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}))
 	r.mux.HandleFunc("/api/temperature-proxy/register", r.requireSensorProxyEnabled(r.temperatureProxyHandlers.HandleRegister))
 	r.mux.HandleFunc("/api/temperature-proxy/authorized-nodes", r.requireSensorProxyEnabled(r.temperatureProxyHandlers.HandleAuthorizedNodes))
 	r.mux.HandleFunc("/api/temperature-proxy/unregister", r.requireSensorProxyEnabled(RequireAdmin(r.config, r.temperatureProxyHandlers.HandleUnregister)))
@@ -1171,14 +1193,26 @@ func (r *Router) setupRoutes() {
 	// Mutation endpoints (run, acknowledge, dismiss, etc.) return 402 to prevent unauthorized actions
 	r.mux.HandleFunc("/api/ai/patrol/status", RequireAuth(r.config, r.aiSettingsHandler.HandleGetPatrolStatus))
 	r.mux.HandleFunc("/api/ai/patrol/stream", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandlePatrolStream)))
-	r.mux.HandleFunc("/api/ai/patrol/findings", RequireAuth(r.config, r.aiSettingsHandler.HandleGetPatrolFindings))
+	r.mux.HandleFunc("/api/ai/patrol/findings", RequireAuth(r.config, func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet:
+			r.aiSettingsHandler.HandleGetPatrolFindings(w, req)
+		case http.MethodDelete:
+			// Clear all findings - doesn't require Pro license so users can clean up accumulated findings
+			r.aiSettingsHandler.HandleClearAllFindings(w, req)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 	r.mux.HandleFunc("/api/ai/patrol/history", RequireAuth(r.config, r.aiSettingsHandler.HandleGetFindingsHistory))
 	r.mux.HandleFunc("/api/ai/patrol/run", RequireAdmin(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleForcePatrol)))
 	r.mux.HandleFunc("/api/ai/patrol/acknowledge", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleAcknowledgeFinding)))
-	r.mux.HandleFunc("/api/ai/patrol/dismiss", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleDismissFinding)))
+	// Dismiss and resolve don't require Pro license - users should be able to clear findings they can see
+	// This is especially important for users who accumulated findings before fixing the patrol-without-AI bug
+	r.mux.HandleFunc("/api/ai/patrol/dismiss", RequireAuth(r.config, r.aiSettingsHandler.HandleDismissFinding))
 	r.mux.HandleFunc("/api/ai/patrol/suppress", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleSuppressFinding)))
 	r.mux.HandleFunc("/api/ai/patrol/snooze", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleSnoozeFinding)))
-	r.mux.HandleFunc("/api/ai/patrol/resolve", RequireAuth(r.config, RequireLicenseFeature(r.licenseHandlers.Service(), license.FeatureAIPatrol, r.aiSettingsHandler.HandleResolveFinding)))
+	r.mux.HandleFunc("/api/ai/patrol/resolve", RequireAuth(r.config, r.aiSettingsHandler.HandleResolveFinding))
 	r.mux.HandleFunc("/api/ai/patrol/runs", RequireAuth(r.config, r.aiSettingsHandler.HandleGetPatrolRunHistory))
 	// Suppression rules management (also Pro-only since they control LLM behavior)
 	// GET returns empty array for unlicensed, POST returns 402

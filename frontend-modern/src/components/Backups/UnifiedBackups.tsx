@@ -14,6 +14,7 @@ import { showTooltip, hideTooltip } from '@/components/shared/Tooltip';
 import type { BackupType, GuestType, UnifiedBackup } from '@/types/backups';
 import { usePersistentSignal } from '@/hooks/usePersistentSignal';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useColumnVisibility, type ColumnDef } from '@/hooks/useColumnVisibility';
 import { logger } from '@/utils/logger';
 
 type BackupSortKey = keyof Pick<
@@ -56,6 +57,28 @@ const UnifiedBackups: Component = () => {
   const pbsBackupsState = createMemo(() => state.backups?.pbs ?? state.pbsBackups);
   const pmgBackupsState = createMemo(() => state.backups?.pmg ?? state.pmgBackups);
   const [searchTerm, setSearchTerm] = createSignal('');
+
+  // PBS enhancement banner: Check if user has PBS storage via PVE passthrough but no direct PBS connection
+  const [pbsBannerDismissed, setPbsBannerDismissed] = createLocalStorageBooleanSignal(
+    'pulse.pbsEnhancementBannerDismissed',
+    false
+  );
+
+  // Detect PBS storage accessed via PVE passthrough (storage.type === 'pbs')
+  const hasPBSViaPassthrough = createMemo(() => {
+    const storageList = state.storage || [];
+    return storageList.some((s) => s.type === 'pbs');
+  });
+
+  // Check if user has direct PBS instances configured
+  const hasDirectPBS = createMemo(() => {
+    return (state.pbs || []).length > 0;
+  });
+
+  // Show banner if: PBS via passthrough exists, no direct PBS, and not dismissed
+  const showPBSEnhancementBanner = createMemo(() => {
+    return hasPBSViaPassthrough() && !hasDirectPBS() && !pbsBannerDismissed();
+  });
   const [selectedNode, setSelectedNode] = createSignal<string | null>(null);
   const [typeFilter, setTypeFilter] = createSignal<'all' | FilterableGuestType>('all');
   const [backupTypeFilter, setBackupTypeFilter] = createSignal<'all' | BackupType>('all');
@@ -135,10 +158,35 @@ const UnifiedBackups: Component = () => {
     }
   });
 
-  const [useRelativeTime, setUseRelativeTime] = createLocalStorageBooleanSignal(
+  const [useRelativeTime] = createLocalStorageBooleanSignal(
     STORAGE_KEYS.BACKUPS_USE_RELATIVE_TIME,
     false, // Default to absolute time
   );
+
+  // Column visibility definitions for the backup table
+  const BACKUP_COLUMNS: ColumnDef[] = [
+    { id: 'vmid', label: 'VMID/ID', priority: 'essential' },
+    { id: 'type', label: 'Type', priority: 'essential' },
+    { id: 'name', label: 'Name', priority: 'essential' },
+    { id: 'node', label: 'Node', priority: 'essential' },
+    { id: 'owner', label: 'Owner', priority: 'secondary', toggleable: true },
+    { id: 'backupTime', label: 'Time', priority: 'essential' },
+    { id: 'size', label: 'Size', priority: 'primary', toggleable: true },
+    { id: 'backupType', label: 'Backup Type', priority: 'essential' },
+    { id: 'storage', label: 'Location', priority: 'primary', toggleable: true },
+    { id: 'verified', label: 'Verified', priority: 'secondary', toggleable: true },
+    { id: 'comment', label: 'Comment', priority: 'supplementary', toggleable: true },
+    { id: 'details', label: 'Details', priority: 'essential' },
+  ];
+
+  // Column visibility with persistence - hide less useful columns by default
+  const columnVisibility = useColumnVisibility(
+    STORAGE_KEYS.BACKUPS_HIDDEN_COLUMNS,
+    BACKUP_COLUMNS,
+    ['comment'] // Comment hidden by default (often empty)
+  );
+  const visibleColumns = columnVisibility.visibleColumns;
+  const isColumnVisible = (id: string) => visibleColumns().some(col => col.id === id);
 
   // Helper functions
   const getDaySuffix = (day: number) => {
@@ -434,6 +482,7 @@ const UnifiedBackups: Component = () => {
         protected: backup.protected || false,
         encrypted: isEncrypted,
         owner: backup.owner,
+        comment: backup.comment,
       });
     });
 
@@ -1142,6 +1191,69 @@ const UnifiedBackups: Component = () => {
         }}
         searchTerm={searchTerm()}
       />
+
+      {/* PBS Enhancement Banner - shown when PBS storage exists via PVE but no direct PBS connection */}
+      <Show when={showPBSEnhancementBanner()}>
+        <div class="relative bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg border border-blue-200 dark:border-blue-800 p-4">
+          <button
+            type="button"
+            onClick={() => setPbsBannerDismissed(true)}
+            class="absolute top-2 right-2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            title="Dismiss"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <div class="flex items-start gap-3 pr-8">
+            <div class="flex-shrink-0 mt-0.5">
+              <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4M12 8h.01" />
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <h4 class="text-sm font-medium text-blue-900 dark:text-blue-100">
+                Get more from your PBS backups
+              </h4>
+              <p class="mt-1 text-xs text-blue-700 dark:text-blue-300">
+                You're viewing PBS backups through your PVE connection. Add your PBS server directly to unlock:
+              </p>
+              <ul class="mt-2 text-xs text-blue-600 dark:text-blue-400 space-y-1">
+                <li class="flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <span>Deduplication factor and storage efficiency stats</span>
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <span>PBS server health monitoring (CPU, memory, uptime)</span>
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <svg class="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <span>Sync, verify, prune, and GC job status</span>
+                </li>
+              </ul>
+              <button
+                type="button"
+                onClick={() => navigate('/settings')}
+                class="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              >
+                Add PBS Server
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
 
       {/* Removed old PBS table */}
       <Show when={false && sortedPBSInstances().length > 0}>
@@ -1903,19 +2015,13 @@ const UnifiedBackups: Component = () => {
           groupBy={groupByMode}
           setGroupBy={setGroupByMode}
           searchInputRef={(el) => (searchInputRef = el)}
-          typeFilter={typeFilter}
-          setTypeFilter={setTypeFilter}
-          statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
-          hasHostBackups={hasHostBackups}
           sortOptions={sortKeyOptions}
           sortKey={sortKey}
           setSortKey={(value) => setSortKey(value as BackupSortKey)}
           sortDirection={sortDirection}
           setSortDirection={setSortDirection}
           onReset={resetFilters}
-          useRelativeTime={useRelativeTime}
-          setUseRelativeTime={setUseRelativeTime}
+          columnVisibility={columnVisibility}
         />
 
         {/* Table */}
@@ -1991,181 +2097,91 @@ const UnifiedBackups: Component = () => {
                   </Card>
                 }
               >
-                {/* Mobile Card View - Compact */}
-                <div class="block lg:hidden space-y-3">
-                  <For each={paginatedData()}>
-                    {(group) => (
-                      <div class="space-y-1">
-                        <div class="text-xs font-medium text-gray-600 dark:text-gray-400 px-2 py-1 sticky top-0 bg-gray-50 dark:bg-gray-900 z-10">
-                          {group.label} ({group.items.length})
-                        </div>
-                        <For each={group.items}>
-                          {(item) => (
-                            <Card padding="sm" class="hover:shadow-sm transition-shadow">
-                              {/* Compact header row */}
-                              <div class="flex items-center justify-between gap-2 mb-1">
-                                <div class="flex items-center gap-2 min-w-0 flex-1">
-                                  <span
-                                    class={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${item.type === 'VM'
-                                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                                      : 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                                      }`}
-                                  >
-                                    {item.type}
-                                  </span>
-                                  <span class="text-xs text-gray-500 shrink-0">{item.vmid}</span>
-                                  <span class="font-medium text-xs truncate">
-                                    {item.name || 'Unnamed'}
-                                  </span>
-                                </div>
-                                <div class="flex items-center gap-2 shrink-0">
-                                  <span
-                                    class={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${item.backupType === 'snapshot'
-                                      ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200'
-                                      : item.backupType === 'local'
-                                        ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-                                        : 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200'
-                                      }`}
-                                  >
-                                    {item.backupType === 'snapshot'
-                                      ? 'SNAP'
-                                      : item.backupType === 'local'
-                                        ? 'PVE'
-                                        : 'PBS'}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Compact info row */}
-                              <div class="flex items-center justify-between gap-2 text-[11px]">
-                                <div class="flex items-center gap-3 text-gray-600 dark:text-gray-400">
-                                  <span>{item.node}</span>
-                                  <span class={getAgeColorClass(item.backupTime)}>
-                                    {formatTime(item.backupTime * 1000)}
-                                  </span>
-                                  <Show when={item.size}>
-                                    <span class={getSizeColor(item.size)}>
-                                      {formatBytes(item.size!)}
-                                    </span>
-                                  </Show>
-                                  <Show when={item.backupType === 'remote' && item.verified}>
-                                    <svg
-                                      class="w-4 h-4 text-green-600 dark:text-green-400 inline"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                    >
-                                      <path
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        stroke-width="2"
-                                        d="M5 13l4 4L19 7"
-                                      />
-                                    </svg>
-                                  </Show>
-                                </div>
-                                <Show
-                                  when={
-                                    (item.storage || item.datastore) &&
-                                    item.backupType !== 'snapshot'
-                                  }
-                                >
-                                  <span class="text-gray-500 dark:text-gray-400 text-[10px] truncate max-w-[100px]">
-                                    {item.storage ||
-                                      (item.datastore &&
-                                        (item.namespace && item.namespace !== 'root'
-                                          ? `${item.datastore}/${item.namespace}`
-                                          : item.datastore)) ||
-                                      '-'}
-                                  </span>
-                                </Show>
-                              </div>
-                            </Card>
-                          )}
-                        </For>
-                      </div>
-                    )}
-                  </For>
-                </div>
+                {/* Mobile Card View removed in favor of scrollable table */}
 
                 {/* Desktop Table View */}
-                <table class="backup-table hidden md:table">
+                <table class="backup-table" style={{ "min-width": "900px" }}>
                   <thead>
                     <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-600">
                       <th
-                        class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('vmid')}
                       >
                         {hasHostBackups() ? 'ID' : 'VMID'}{' '}
                         {sortKey() === 'vmid' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
                       <th
-                        class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('type')}
                       >
                         Type {sortKey() === 'type' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
                       <th
-                        class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('name')}
                       >
                         Name {sortKey() === 'name' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
                       <th
-                        class="hidden xl:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('node')}
                       >
                         Node {sortKey() === 'node' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
-                      <Show when={backupTypeFilter() === 'all' || backupTypeFilter() === 'remote'}>
+                      <Show when={isColumnVisible('owner') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')}>
                         <th
-                          class="hidden 2xl:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                          class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                           onClick={() => handleSort('owner')}
                         >
                           Owner {sortKey() === 'owner' && (sortDirection() === 'asc' ? '▲' : '▼')}
                         </th>
                       </Show>
                       <th
-                        class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('backupTime')}
                       >
                         Time {sortKey() === 'backupTime' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
-                      <Show when={backupTypeFilter() !== 'snapshot'}>
+                      <Show when={isColumnVisible('size') && backupTypeFilter() !== 'snapshot'}>
                         <th
-                          class="hidden lg:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                          class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                           onClick={() => handleSort('size')}
                         >
                           Size {sortKey() === 'size' && (sortDirection() === 'asc' ? '▲' : '▼')}
                         </th>
                       </Show>
                       <th
-                        class="hidden lg:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                        class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                         onClick={() => handleSort('backupType')}
                       >
                         Backup{' '}
                         {sortKey() === 'backupType' && (sortDirection() === 'asc' ? '▲' : '▼')}
                       </th>
-                      <Show when={backupTypeFilter() !== 'snapshot'}>
+                      <Show when={isColumnVisible('storage') && backupTypeFilter() !== 'snapshot'}>
                         <th
-                          class="hidden xl:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                          class="px-1.5 sm:px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                           onClick={() => handleSort('storage')}
                         >
                           Location{' '}
                           {sortKey() === 'storage' && (sortDirection() === 'asc' ? '▲' : '▼')}
                         </th>
                       </Show>
-                      <Show when={backupTypeFilter() === 'all' || backupTypeFilter() === 'remote'}>
+                      <Show when={isColumnVisible('verified') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')}>
                         <th
-                          class="hidden lg:table-cell px-2 py-1.5 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
+                          class="px-2 py-1.5 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
                           onClick={() => handleSort('verified')}
                         >
                           <span title="Verified">✓</span>
                           {sortKey() === 'verified' && (sortDirection() === 'asc' ? ' ▲' : ' ▼')}
                         </th>
                       </Show>
+                      <Show when={isColumnVisible('comment') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')}>
+                        <th class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider">
+                          Comment
+                        </th>
+                      </Show>
                       <th
-                        class="hidden md:table-cell px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider"
+                        class="px-2 py-1.5 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider"
                       >
                         Details
                       </th>
@@ -2193,8 +2209,8 @@ const UnifiedBackups: Component = () => {
                           <For each={group.items}>
                             {(item) => (
                               <tr class="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                                <td class="p-0.5 pl-5 pr-1.5 text-sm align-middle">{item.vmid}</td>
-                                <td class="p-0.5 px-1.5 align-middle">
+                                <td class="p-0.5 pl-3 sm:pl-5 pr-1 sm:pr-1.5 text-xs sm:text-sm align-middle">{item.vmid}</td>
+                                <td class="p-0.5 px-1 sm:px-1.5 align-middle">
                                   <span
                                     class={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${item.type === 'VM'
                                       ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
@@ -2209,13 +2225,13 @@ const UnifiedBackups: Component = () => {
                                 <td class="p-0.5 px-1.5 text-sm align-middle">
                                   {item.name || '-'}
                                 </td>
-                                <td class="hidden xl:table-cell p-0.5 px-1.5 text-sm align-middle">{item.node}</td>
+                                <td class="p-0.5 px-1.5 text-sm align-middle">{item.node}</td>
                                 <Show
                                   when={
-                                    backupTypeFilter() === 'all' || backupTypeFilter() === 'remote'
+                                    isColumnVisible('owner') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')
                                   }
                                 >
-                                  <td class="hidden 2xl:table-cell p-0.5 px-1.5 text-xs align-middle text-gray-500 dark:text-gray-400">
+                                  <td class="p-0.5 px-1.5 text-xs align-middle text-gray-500 dark:text-gray-400">
                                     {item.owner ? item.owner.split('@')[0] : '-'}
                                   </td>
                                 </Show>
@@ -2224,14 +2240,14 @@ const UnifiedBackups: Component = () => {
                                 >
                                   {formatTime(item.backupTime * 1000)}
                                 </td>
-                                <Show when={backupTypeFilter() !== 'snapshot'}>
+                                <Show when={isColumnVisible('size') && backupTypeFilter() !== 'snapshot'}>
                                   <td
-                                    class={`hidden lg:table-cell p-0.5 px-1.5 align-middle ${getSizeColor(item.size)}`}
+                                    class={`p-0.5 px-1.5 align-middle ${getSizeColor(item.size)}`}
                                   >
                                     {item.size ? formatBytes(item.size) : '-'}
                                   </td>
                                 </Show>
-                                <td class="hidden lg:table-cell p-0.5 px-1.5 align-middle">
+                                <td class="p-0.5 px-1 sm:px-1.5 align-middle">
                                   <div class="flex items-center gap-1">
                                     <span
                                       class={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${item.backupType === 'snapshot'
@@ -2247,6 +2263,15 @@ const UnifiedBackups: Component = () => {
                                           ? 'PVE'
                                           : 'PBS'}
                                     </span>
+                                    {/* Data source indicator for PBS via passthrough */}
+                                    <Show when={item.backupType === 'remote' && item.storage && !item.datastore}>
+                                      <span
+                                        class="text-[9px] text-gray-400 dark:text-gray-500 font-medium"
+                                        title="PBS backup accessed via PVE storage - add PBS directly for more detail"
+                                      >
+                                        via PVE
+                                      </span>
+                                    </Show>
                                     <Show when={item.encrypted}>
                                       <span
                                         title="Encrypted backup"
@@ -2287,8 +2312,8 @@ const UnifiedBackups: Component = () => {
                                     </Show>
                                   </div>
                                 </td>
-                                <Show when={backupTypeFilter() !== 'snapshot'}>
-                                  <td class="hidden xl:table-cell p-0.5 px-1.5 text-sm align-middle">
+                                <Show when={isColumnVisible('storage') && backupTypeFilter() !== 'snapshot'}>
+                                  <td class="p-0.5 px-1.5 text-sm align-middle">
                                     {item.storage ||
                                       (item.datastore &&
                                         (item.namespace && item.namespace !== 'root'
@@ -2299,10 +2324,10 @@ const UnifiedBackups: Component = () => {
                                 </Show>
                                 <Show
                                   when={
-                                    backupTypeFilter() === 'all' || backupTypeFilter() === 'remote'
+                                    isColumnVisible('verified') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')
                                   }
                                 >
-                                  <td class="hidden lg:table-cell p-0.5 px-1.5 text-center align-middle">
+                                  <td class="p-0.5 px-1.5 text-center align-middle">
                                     {item.backupType === 'remote' ? (
                                       item.verified ? (
                                         <span title="PBS backup verified">
@@ -2347,8 +2372,17 @@ const UnifiedBackups: Component = () => {
                                     )}
                                   </td>
                                 </Show>
+                                <Show
+                                  when={
+                                    isColumnVisible('comment') && (backupTypeFilter() === 'all' || backupTypeFilter() === 'remote')
+                                  }
+                                >
+                                  <td class="p-0.5 px-1.5 text-xs align-middle text-gray-500 dark:text-gray-400 max-w-[150px] truncate" title={item.comment || ''}>
+                                    {item.comment || '-'}
+                                  </td>
+                                </Show>
                                 <td
-                                  class="hidden md:table-cell p-0.5 px-1.5 align-middle"
+                                  class="p-0.5 px-1.5 align-middle"
                                   onMouseEnter={(e) => {
                                     const details = [];
 
