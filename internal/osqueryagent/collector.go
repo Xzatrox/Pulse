@@ -32,7 +32,7 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path, resident_size FROM processes;")
 	output, err := cmd.Output()
 	if err != nil {
-		a.logger.Warn().Err(err).Msg("Failed to collect process memory, retrying without resident_size")
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to collect process memory, retrying without resident_size")
 		cmd = exec.Command("osqueryi", "--json", "SELECT pid, name, path FROM processes;")
 		output, err = cmd.Output()
 		if err != nil {
