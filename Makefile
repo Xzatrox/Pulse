@@ -86,6 +86,7 @@ test-all: test test-integration
 build-agents:
 	@echo "Building agent binaries for all platforms..."
 	@mkdir -p bin
+	@go mod tidy
 	@VERSION=$$(cat VERSION | tr -d '\n') && \
 	echo "Building docker agent binaries (version: v$$VERSION)..." && \
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X github.com/rcourtman/pulse-go-rewrite/internal/dockeragent.Version=v$$VERSION" -trimpath -o bin/pulse-docker-agent-linux-amd64 ./cmd/pulse-docker-agent && \
