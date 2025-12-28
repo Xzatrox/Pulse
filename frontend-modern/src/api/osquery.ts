@@ -7,12 +7,14 @@ export interface Process {
   log_files: string[];
   log_command?: string;
   memory_bytes?: string;
+  status?: string;
 }
 
 export interface Service {
   name: string;
   state: string;
   status: string;
+  health?: string;
 }
 
 export interface OsqueryReport {

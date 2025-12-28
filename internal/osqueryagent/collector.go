@@ -14,12 +14,14 @@ type Process struct {
 	LogFiles    []string `json:"log_files,omitempty"`
 	LogCommand  string   `json:"log_command,omitempty"`
 	MemoryBytes string   `json:"memory_bytes,omitempty"`
+	Status      string   `json:"status,omitempty"`
 }
 
 type Service struct {
 	Name   string `json:"name"`
 	State  string `json:"state"`
 	Status string `json:"status"`
+	Health string `json:"health,omitempty"`
 }
 
 type OpenFile struct {
@@ -74,6 +76,8 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 	serviceNames := a.getServiceNames()
 	for i := range processes {
 		processes[i].LogFiles = filterLogFiles(openFiles[processes[i].PID])
+		// Determine process status
+		processes[i].Status = "running"
 		// If no log files found, suggest journalctl command
 		if len(processes[i].LogFiles) == 0 {
 			if serviceName, ok := serviceNames[processes[i].Name]; ok {
@@ -162,6 +166,18 @@ func (a *Agent) collectServices() ([]Service, error) {
 	
 	var services []Service
 	json.Unmarshal(output, &services)
+	
+	// Set health status based on state
+	for i := range services {
+		if services[i].State == "active" && services[i].Status == "running" {
+			services[i].Health = "healthy"
+		} else if services[i].State == "failed" {
+			services[i].Health = "unhealthy"
+		} else {
+			services[i].Health = "unknown"
+		}
+	}
+	
 	return services, nil
 }
 

@@ -49,11 +49,13 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 			LogFiles    []string `json:"log_files"`
 			LogCommand  string   `json:"log_command"`
 			MemoryBytes string   `json:"memory_bytes"`
+			Status      string   `json:"status"`
 		} `json:"processes"`
 		Services []struct {
 			Name   string `json:"name"`
 			State  string `json:"state"`
 			Status string `json:"status"`
+			Health string `json:"health"`
 		} `json:"services"`
 		Timestamp string `json:"timestamp"`
 	}
