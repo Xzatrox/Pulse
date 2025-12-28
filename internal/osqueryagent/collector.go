@@ -50,6 +50,15 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 		return nil, err
 	}
 	
+	a.cfg.Logger.Debug().Int("raw_count", len(rawProcesses)).Msg("Parsed process data")
+	if len(rawProcesses) > 0 {
+		a.cfg.Logger.Debug().
+			Str("sample_pid", rawProcesses[0].PID).
+			Str("sample_name", rawProcesses[0].Name).
+			Str("sample_memory", rawProcesses[0].ResidentSize).
+			Msg("Sample process data")
+	}
+	
 	processes := make([]Process, len(rawProcesses))
 	for i, rp := range rawProcesses {
 		processes[i] = Process{
