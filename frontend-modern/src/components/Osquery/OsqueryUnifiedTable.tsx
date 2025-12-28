@@ -22,6 +22,16 @@ const OsqueryUnifiedTable: React.FC<OsqueryUnifiedTableProps> = ({
     return matchesSearch;
   });
 
+  const formatMemory = (bytes?: string) => {
+    if (!bytes) return 'N/A';
+    const num = parseInt(bytes);
+    if (isNaN(num)) return 'N/A';
+    if (num < 1024) return `${num} B`;
+    if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+    if (num < 1024 * 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(num / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+
   return (
     <div>
       <h2 className="text-xl font-semibold mb-4">Running Processes</h2>
@@ -31,6 +41,7 @@ const OsqueryUnifiedTable: React.FC<OsqueryUnifiedTableProps> = ({
             <th className="border p-2 text-left">PID</th>
             <th className="border p-2 text-left">Name</th>
             <th className="border p-2 text-left">Path</th>
+            <th className="border p-2 text-left">Memory</th>
             <th className="border p-2 text-left">Log Files</th>
             <th className="border p-2 text-left">Agent</th>
           </tr>
@@ -41,11 +52,12 @@ const OsqueryUnifiedTable: React.FC<OsqueryUnifiedTableProps> = ({
               <td className="border p-2">{process.pid}</td>
               <td className="border p-2 font-medium">{process.name}</td>
               <td className="border p-2 text-sm text-gray-600">{process.path}</td>
+              <td className="border p-2 text-sm">{formatMemory(process.memory_bytes)}</td>
               <td className="border p-2 text-sm">
-                {process.log_files.length > 0 ? (
+                {process.log_files?.length > 0 ? (
                   <ul className="list-disc list-inside">
                     {process.log_files.slice(0, 3).map((log, i) => (
-                      <li key={i}>{log}</li>
+                      <li key={i} className="truncate max-w-xs" title={log}>{log}</li>
                     ))}
                     {process.log_files.length > 3 && (
                       <li>+{process.log_files.length - 3} more</li>

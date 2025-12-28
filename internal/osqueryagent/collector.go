@@ -8,10 +8,11 @@ import (
 )
 
 type Process struct {
-	PID      string   `json:"pid"`
-	Name     string   `json:"name"`
-	Path     string   `json:"path"`
-	LogFiles []string `json:"log_files,omitempty"`
+	PID         string   `json:"pid"`
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	LogFiles    []string `json:"log_files,omitempty"`
+	MemoryBytes string   `json:"memory_bytes,omitempty"`
 }
 
 type Service struct {
@@ -28,14 +29,29 @@ type OpenFile struct {
 var logExtensions = []string{".log", ".txt", ".out", ".err"}
 
 func (a *Agent) collectProcesses() ([]Process, error) {
-	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path FROM processes;")
+	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path, resident_size FROM processes;")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 	
-	var processes []Process
-	json.Unmarshal(output, &processes)
+	var rawProcesses []struct {
+		PID          string `json:"pid"`
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		ResidentSize string `json:"resident_size"`
+	}
+	json.Unmarshal(output, &rawProcesses)
+	
+	processes := make([]Process, len(rawProcesses))
+	for i, rp := range rawProcesses {
+		processes[i] = Process{
+			PID:         rp.PID,
+			Name:        rp.Name,
+			Path:        rp.Path,
+			MemoryBytes: rp.ResidentSize,
+		}
+	}
 	
 	openFiles, _ := a.collectOpenFiles()
 	for i := range processes {

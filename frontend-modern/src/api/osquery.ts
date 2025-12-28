@@ -5,6 +5,7 @@ export interface Process {
   name: string;
   path: string;
   log_files: string[];
+  memory_bytes?: string;
 }
 
 export interface Service {

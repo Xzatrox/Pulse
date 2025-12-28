@@ -6,6 +6,16 @@ interface OsqueryHostSummaryTableProps {
 }
 
 const OsqueryHostSummaryTable: React.FC<OsqueryHostSummaryTableProps> = ({ reports }) => {
+  const calculateTotalMemory = (processes: OsqueryReport['processes']) => {
+    const total = processes.reduce((sum, p) => {
+      const mem = parseInt(p.memory_bytes || '0');
+      return sum + (isNaN(mem) ? 0 : mem);
+    }, 0);
+    if (total < 1024 * 1024) return `${(total / 1024).toFixed(1)} KB`;
+    if (total < 1024 * 1024 * 1024) return `${(total / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(total / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+
   return (
     <div className="mb-6">
       <h2 className="text-xl font-semibold mb-4">Host Summary</h2>
@@ -15,6 +25,7 @@ const OsqueryHostSummaryTable: React.FC<OsqueryHostSummaryTableProps> = ({ repor
             <th className="border p-2 text-left">Agent ID</th>
             <th className="border p-2 text-left">Processes</th>
             <th className="border p-2 text-left">Services</th>
+            <th className="border p-2 text-left">Total Memory</th>
             <th className="border p-2 text-left">Last Update</th>
           </tr>
         </thead>
@@ -24,6 +35,7 @@ const OsqueryHostSummaryTable: React.FC<OsqueryHostSummaryTableProps> = ({ repor
               <td className="border p-2">{agentId}</td>
               <td className="border p-2">{report.processes.length}</td>
               <td className="border p-2">{report.services.length}</td>
+              <td className="border p-2">{calculateTotalMemory(report.processes)}</td>
               <td className="border p-2">{new Date(report.timestamp).toLocaleString()}</td>
             </tr>
           ))}
