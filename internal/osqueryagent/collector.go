@@ -114,12 +114,19 @@ func (a *Agent) collectOpenFiles() (map[string][]string, error) {
 func filterLogFiles(files []string) []string {
 	var logs []string
 	for _, file := range files {
+		fileLower := strings.ToLower(file)
+		// Check extensions
 		for _, ext := range logExtensions {
-			if strings.HasSuffix(strings.ToLower(file), ext) {
+			if strings.HasSuffix(fileLower, ext) {
 				logs = append(logs, file)
-				break
+				goto next
 			}
 		}
+		// Check if file is in /var/log/ directory
+		if strings.HasPrefix(file, "/var/log/") {
+			logs = append(logs, file)
+		}
+	next:
 	}
 	return logs
 }
