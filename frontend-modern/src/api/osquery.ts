@@ -1,3 +1,5 @@
+import { apiFetchJSON } from '@/utils/apiClient';
+
 export interface Process {
   pid: string;
   name: string;
@@ -19,14 +21,10 @@ export interface OsqueryReport {
 
 export const OsqueryAPI = {
   getReport: async (agentId: string): Promise<OsqueryReport> => {
-    const response = await fetch(`/api/agents/${agentId}/osquery`);
-    if (!response.ok) throw new Error('Failed to fetch osquery report');
-    return response.json();
+    return apiFetchJSON(`/api/agents/${agentId}/osquery`);
   },
 
   getAllReports: async (): Promise<Record<string, OsqueryReport>> => {
-    const response = await fetch('/api/osquery/reports');
-    if (!response.ok) throw new Error('Failed to fetch osquery reports');
-    return response.json();
+    return apiFetchJSON('/api/osquery/reports');
   },
 };
