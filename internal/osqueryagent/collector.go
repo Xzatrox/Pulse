@@ -91,11 +91,17 @@ func (a *Agent) collectOpenFiles() (map[string][]string, error) {
 	cmd := exec.Command("osqueryi", "--json", query)
 	output, err := cmd.Output()
 	if err != nil {
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to collect open files")
 		return nil, err
 	}
 	
 	var files []OpenFile
-	json.Unmarshal(output, &files)
+	if err := json.Unmarshal(output, &files); err != nil {
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to parse open files")
+		return nil, err
+	}
+	
+	a.cfg.Logger.Debug().Int("open_files_count", len(files)).Msg("Collected open files")
 	
 	filesByPID := make(map[string][]string)
 	for _, f := range files {
