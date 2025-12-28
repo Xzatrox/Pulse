@@ -123,7 +123,11 @@ const OsqueryHosts = () => {
                         <td class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{process.path}</td>
                         <td class="px-4 py-2 text-sm">{formatMemory(process.memory_bytes)}</td>
                         <td class="px-4 py-2 text-sm">
-                          <Show when={process.log_files?.length > 0} fallback={<span class="text-gray-400">None</span>}>
+                          <Show when={process.log_files?.length > 0} fallback={
+                            <Show when={process.log_command} fallback={<span class="text-gray-400">None</span>}>
+                              <code class="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">{process.log_command}</code>
+                            </Show>
+                          }>
                             <ul class="list-disc list-inside">
                               <For each={process.log_files.slice(0, 3)}>
                                 {(log) => <li class="truncate max-w-xs" title={log}>{log}</li>}

@@ -12,6 +12,7 @@ type Process struct {
 	Name        string   `json:"name"`
 	Path        string   `json:"path"`
 	LogFiles    []string `json:"log_files,omitempty"`
+	LogCommand  string   `json:"log_command,omitempty"`
 	MemoryBytes string   `json:"memory_bytes,omitempty"`
 }
 
@@ -70,8 +71,17 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 	}
 	
 	openFiles, _ := a.collectOpenFiles()
+	serviceNames := a.getServiceNames()
 	for i := range processes {
 		processes[i].LogFiles = filterLogFiles(openFiles[processes[i].PID])
+		// If no log files found, suggest journalctl command
+		if len(processes[i].LogFiles) == 0 {
+			if serviceName, ok := serviceNames[processes[i].Name]; ok {
+				processes[i].LogCommand = "journalctl -u " + serviceName + " -f"
+			} else {
+				processes[i].LogCommand = "journalctl _PID=" + processes[i].PID + " -f"
+			}
+		}
 	}
 	
 	return processes, nil
@@ -153,4 +163,19 @@ func (a *Agent) collectServices() ([]Service, error) {
 	var services []Service
 	json.Unmarshal(output, &services)
 	return services, nil
+}
+
+func (a *Agent) getServiceNames() map[string]string {
+	services, err := a.collectServices()
+	if err != nil {
+		return nil
+	}
+	
+	serviceMap := make(map[string]string)
+	for _, svc := range services {
+		// Extract process name from service name (e.g., "pulse.service" -> "pulse")
+		name := strings.TrimSuffix(svc.Name, ".service")
+		serviceMap[name] = svc.Name
+	}
+	return serviceMap
 }
