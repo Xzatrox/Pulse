@@ -32,7 +32,12 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path, resident_size FROM processes;")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		a.logger.Warn().Err(err).Msg("Failed to collect process memory, retrying without resident_size")
+		cmd = exec.Command("osqueryi", "--json", "SELECT pid, name, path FROM processes;")
+		output, err = cmd.Output()
+		if err != nil {
+			return nil, err
+		}
 	}
 	
 	var rawProcesses []struct {
@@ -41,7 +46,9 @@ func (a *Agent) collectProcesses() ([]Process, error) {
 		Path         string `json:"path"`
 		ResidentSize string `json:"resident_size"`
 	}
-	json.Unmarshal(output, &rawProcesses)
+	if err := json.Unmarshal(output, &rawProcesses); err != nil {
+		return nil, err
+	}
 	
 	processes := make([]Process, len(rawProcesses))
 	for i, rp := range rawProcesses {
