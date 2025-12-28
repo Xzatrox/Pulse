@@ -11,7 +11,11 @@ func (a *Agent) filterProcesses(processes []Process) []Process {
 	for _, p := range processes {
 		if !a.shouldExclude(p.Name) {
 			filtered = append(filtered, p)
-			a.cfg.Logger.Debug().Str("process", p.Name).Str("path", p.Path).Msg("Process included")
+			a.cfg.Logger.Debug().
+				Str("process", p.Name).
+				Str("path", p.Path).
+				Str("memory", p.MemoryBytes).
+				Msg("Process included")
 		}
 	}
 	return filtered
