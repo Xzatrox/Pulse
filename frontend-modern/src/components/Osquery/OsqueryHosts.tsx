@@ -1,11 +1,20 @@
-import { createSignal, createEffect, onCleanup, Show, For } from 'solid-js';
+import { createSignal, createEffect, onCleanup, Show, For, createMemo } from 'solid-js';
 import { OsqueryAPI, OsqueryReport } from '../../api/osquery';
+import { Card } from '@/components/shared/Card';
+import { ScrollableTable } from '@/components/shared/ScrollableTable';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
+
+type SortKey = 'name' | 'pid' | 'memory' | 'status';
+type SortDirection = 'asc' | 'desc';
 
 const OsqueryHosts = () => {
   const [reports, setReports] = createSignal<Record<string, OsqueryReport>>({});
   const [loading, setLoading] = createSignal(true);
   const [searchTerm, setSearchTerm] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<string | null>(null);
+  const [sortKey, setSortKey] = createSignal<SortKey>('name');
+  const [sortDirection, setSortDirection] = createSignal<SortDirection>('asc');
+  const { isMobile } = useBreakpoint();
 
   const loadReports = async () => {
     try {
@@ -36,15 +45,54 @@ const OsqueryHosts = () => {
     return formatMemory(total.toString());
   };
 
-  const allProcesses = () => {
+  const handleSort = (key: SortKey) => {
+    if (sortKey() === key) {
+      setSortDirection(sortDirection() === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDirection('asc');
+    }
+  };
+
+  const renderSortIndicator = (key: SortKey) => {
+    if (sortKey() !== key) return null;
+    return sortDirection() === 'asc' ? '▲' : '▼';
+  };
+
+  const sortedProcesses = createMemo(() => {
     const agent = selectedAgent();
     if (!agent) return [];
     const report = reports()[agent];
     if (!report) return [];
-    return report.processes
+    
+    const filtered = report.processes
       .filter((p) => p.name.toLowerCase().includes(searchTerm().toLowerCase()))
       .map((p) => ({ ...p, agentId: agent }));
-  };
+
+    const key = sortKey();
+    const dir = sortDirection();
+
+    filtered.sort((a, b) => {
+      let value = 0;
+      switch (key) {
+        case 'name':
+          value = a.name.localeCompare(b.name);
+          break;
+        case 'pid':
+          value = parseInt(a.pid) - parseInt(b.pid);
+          break;
+        case 'memory':
+          value = parseInt(a.memory_bytes || '0') - parseInt(b.memory_bytes || '0');
+          break;
+        case 'status':
+          value = (a.status || 'running').localeCompare(b.status || 'running');
+          break;
+      }
+      return dir === 'asc' ? value : -value;
+    });
+
+    return filtered;
+  });
 
   createEffect(() => {
     loadReports();
@@ -72,43 +120,42 @@ const OsqueryHosts = () => {
           <h1 class="text-2xl font-bold mb-6 text-gray-800 dark:text-gray-200">osquery Monitoring</h1>
           
           {/* Agents */}
-          <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm mb-6 overflow-hidden border border-gray-200 dark:border-gray-700">
-            <h2 class="text-xl font-semibold p-4 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">Agents</h2>
-            <div class="overflow-x-auto">
-              <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                <thead class="bg-gray-50 dark:bg-gray-900">
-                  <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Agent ID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Processes</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Services</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Memory</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Last Update</th>
+          <Card padding="none" tone="glass" class="mb-4 overflow-hidden">
+            <ScrollableTable persistKey="osquery-agents" minWidth={isMobile() ? '100%' : '600px'}>
+              <table class="w-full border-collapse whitespace-nowrap">
+                <thead>
+                  <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
+                    <th class="pl-3 pr-2 py-1 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Agent ID</th>
+                    <th class="px-2 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Processes</th>
+                    <th class="px-2 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Services</th>
+                    <th class="px-2 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Total Memory</th>
+                    <th class="pr-3 pl-2 py-1 text-right text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Last Update</th>
                   </tr>
                 </thead>
-                <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                   <For each={Object.entries(reports())}>
                     {([agentId, report]) => (
                       <tr 
-                        class="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors"
+                        class="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
                         classList={{ 'bg-blue-50 dark:bg-blue-900/30': selectedAgent() === agentId }}
                         onClick={() => setSelectedAgent(agentId)}
                       >
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">{agentId}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{report.processes?.length || 0}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{report.services?.length || 0}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{calculateTotalMemory(report.processes)}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{new Date(report.timestamp).toLocaleString()}</td>
+                        <td class="pl-3 pr-2 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{agentId}</td>
+                        <td class="px-2 py-2 text-sm text-center text-gray-500 dark:text-gray-400">{report.processes?.length || 0}</td>
+                        <td class="px-2 py-2 text-sm text-center text-gray-500 dark:text-gray-400">{report.services?.length || 0}</td>
+                        <td class="px-2 py-2 text-sm text-center text-gray-500 dark:text-gray-400">{calculateTotalMemory(report.processes)}</td>
+                        <td class="pr-3 pl-2 py-2 text-sm text-right text-gray-500 dark:text-gray-400">{new Date(report.timestamp).toLocaleString()}</td>
                       </tr>
                     )}
                   </For>
                 </tbody>
               </table>
-            </div>
-          </div>
+            </ScrollableTable>
+          </Card>
 
           {/* Running Processes */}
           <Show when={selectedAgent()}>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm overflow-hidden border border-gray-200 dark:border-gray-700">
+            <Card padding="none" tone="glass" class="overflow-hidden">
               <div class="p-4 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
                 <h2 class="text-xl font-semibold mb-3 text-gray-900 dark:text-gray-100">Processes - {selectedAgent()}</h2>
                 <input
@@ -119,45 +166,65 @@ const OsqueryHosts = () => {
                   onInput={(e) => setSearchTerm(e.currentTarget.value)}
                 />
               </div>
-              <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                  <thead class="bg-gray-50 dark:bg-gray-900">
-                    <tr>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">PID</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Path</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Status</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Memory</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Log Files</th>
+              <ScrollableTable persistKey="osquery-processes" minWidth={isMobile() ? '100%' : '900px'}>
+                <table class="w-full border-collapse whitespace-nowrap">
+                  <thead>
+                    <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
+                      <th 
+                        class="pl-3 pr-2 py-1 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap"
+                        onClick={() => handleSort('pid')}
+                      >
+                        PID {renderSortIndicator('pid')}
+                      </th>
+                      <th 
+                        class="px-2 py-1 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap"
+                        onClick={() => handleSort('name')}
+                      >
+                        Name {renderSortIndicator('name')}
+                      </th>
+                      <th class="px-2 py-1 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Path</th>
+                      <th 
+                        class="px-2 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap"
+                        onClick={() => handleSort('status')}
+                      >
+                        Status {renderSortIndicator('status')}
+                      </th>
+                      <th 
+                        class="px-2 py-1 text-right text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap"
+                        onClick={() => handleSort('memory')}
+                      >
+                        Memory {renderSortIndicator('memory')}
+                      </th>
+                      <th class="pr-3 pl-2 py-1 text-left text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap">Log Files</th>
                     </tr>
                   </thead>
-                  <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                    <For each={allProcesses()}>
+                  <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                    <For each={sortedProcesses()}>
                       {(process) => (
-                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-                          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{process.pid}</td>
-                          <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">{process.name}</td>
-                          <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-md truncate">{process.path}</td>
-                          <td class="px-6 py-4 whitespace-nowrap text-sm">
-                            <span class="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                          <td class="pl-3 pr-2 py-2 text-sm text-gray-900 dark:text-gray-100">{process.pid}</td>
+                          <td class="px-2 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{process.name}</td>
+                          <td class="px-2 py-2 text-sm text-gray-500 dark:text-gray-400 max-w-md truncate">{process.path}</td>
+                          <td class="px-2 py-2 text-sm text-center">
+                            <span class="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
                               {process.status || 'running'}
                             </span>
                           </td>
-                          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{formatMemory(process.memory_bytes)}</td>
-                          <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
+                          <td class="px-2 py-2 text-sm text-right text-gray-500 dark:text-gray-400">{formatMemory(process.memory_bytes)}</td>
+                          <td class="pr-3 pl-2 py-2 text-sm text-gray-500 dark:text-gray-400">
                             <Show when={process.log_files?.length > 0} fallback={
                               <Show when={process.log_command} fallback={<span class="text-gray-400">None</span>}>
                                 <code class="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono">{process.log_command}</code>
                               </Show>
                             }>
-                              <ul class="list-disc list-inside space-y-1">
-                                <For each={process.log_files.slice(0, 3)}>
-                                  {(log) => <li class="truncate max-w-xs" title={log}>{log}</li>}
+                              <div class="max-w-xs">
+                                <For each={process.log_files.slice(0, 2)}>
+                                  {(log) => <div class="truncate" title={log}>{log}</div>}
                                 </For>
-                                <Show when={process.log_files.length > 3}>
-                                  <li class="text-gray-400">+{process.log_files.length - 3} more</li>
+                                <Show when={process.log_files.length > 2}>
+                                  <div class="text-gray-400">+{process.log_files.length - 2} more</div>
                                 </Show>
-                              </ul>
+                              </div>
                             </Show>
                           </td>
                         </tr>
@@ -165,8 +232,8 @@ const OsqueryHosts = () => {
                     </For>
                   </tbody>
                 </table>
-              </div>
-            </div>
+              </ScrollableTable>
+            </Card>
           </Show>
         </div>
       </Show>
