@@ -115,6 +115,11 @@ success "Installed to $INSTALL_DIR/pulse-osquery-agent"
 # Create config directory
 mkdir -p "$CONFIG_DIR"
 
+# Generate agent ID from hostname if not provided
+if [ -z "$PULSE_AGENT_ID" ]; then
+  PULSE_AGENT_ID=$(hostname)
+fi
+
 # Create config file
 cat > "$CONFIG_DIR/osquery-agent.yaml" <<EOF
 server:
