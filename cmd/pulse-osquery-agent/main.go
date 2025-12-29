@@ -10,10 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rcourtman/pulse-go-rewrite/internal/agentupdate"
 	"github.com/rcourtman/pulse-go-rewrite/internal/osqueryagent"
 	"github.com/rcourtman/pulse-go-rewrite/internal/utils"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
 )
 
 var defaultSystemPatterns = []string{
@@ -224,8 +226,31 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Start Auto-Updater
+	updater := agentupdate.New(agentupdate.Config{
+		PulseURL:           *serverURL,
+		APIToken:           *apiToken,
+		AgentName:          "pulse-osquery-agent",
+		CurrentVersion:     osqueryagent.Version,
+		CheckInterval:      1 * time.Hour,
+		InsecureSkipVerify: false,
+		Logger:             &log.Logger,
+		Disabled:           false,
+	})
+
+	g.Go(func() error {
+		updater.RunLoop(ctx)
+		return nil
+	})
+
 	// Run agent
-	if err := agent.Run(ctx); err != nil {
+	g.Go(func() error {
+		return agent.Run(ctx)
+	})
+
+	if err := g.Wait(); err != nil && err != context.Canceled {
 		log.Fatal().Err(err).Msg("Agent failed")
 	}
 
