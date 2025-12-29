@@ -128,8 +128,8 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 		Int("services", len(report.Services)).
 		Msg("Received osquery report")
 
-	if h.store == nil {
-		log.Error().Msg("osquery store not initialized - report will be discarded")
+	if err := h.ensureStore(); err != nil {
+		log.Error().Err(err).Msg("Failed to initialize osquery store")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
