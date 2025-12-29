@@ -194,6 +194,8 @@ func (r *Router) setupRoutes() {
 	r.kubernetesAgentHandlers = NewKubernetesAgentHandlers(r.monitor, r.wsHub)
 	r.hostAgentHandlers = NewHostAgentHandlers(r.monitor, r.wsHub)
 	osqueryAgentHandlers := NewOsqueryAgentHandlers(r.config.DataPath)
+	// Start osquery cleanup scheduler with 7-day retention
+	osqueryAgentHandlers.StartCleanupScheduler(7)
 	r.temperatureProxyHandlers = NewTemperatureProxyHandlers(r.config, r.persistence, r.reloadFunc)
 	r.resourceHandlers = NewResourceHandlers()
 	r.licenseHandlers = NewLicenseHandlers(r.config.DataPath)

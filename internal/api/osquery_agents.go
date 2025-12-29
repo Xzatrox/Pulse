@@ -32,6 +32,39 @@ func NewOsqueryAgentHandlers(dataPath string) *OsqueryAgentHandlers {
 	return &OsqueryAgentHandlers{store: store, dataPath: dataPath}
 }
 
+func (h *OsqueryAgentHandlers) StartCleanupScheduler(retentionDays int) {
+	if h.store == nil {
+		log.Warn().Msg("Cannot start osquery cleanup scheduler - store not initialized")
+		return
+	}
+
+	if retentionDays <= 0 {
+		retentionDays = 7
+	}
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		runOsqueryCleanup(h.store, retentionDays)
+
+		for range ticker.C {
+			runOsqueryCleanup(h.store, retentionDays)
+		}
+	}()
+}
+
+func runOsqueryCleanup(store OsqueryStoreInterface, retentionDays int) {
+	if osqueryStore, ok := store.(*OsqueryStore); ok {
+		deleted, err := osqueryStore.CleanupOldReports(retentionDays)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to cleanup osquery reports")
+		} else if deleted > 0 {
+			log.Info().Int64("deleted", deleted).Int("retentionDays", retentionDays).Msg("Cleaned up old osquery reports")
+		}
+	}
+}
+
 func (h *OsqueryAgentHandlers) ensureStore() error {
 	if h.store != nil {
 		return nil
