@@ -207,6 +207,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/api/agents/host/report", RequireAuth(r.config, RequireScope(config.ScopeHostReport, r.hostAgentHandlers.HandleReport)))
 	r.mux.HandleFunc("/api/agents/host/lookup", RequireAuth(r.config, RequireScope(config.ScopeHostReport, r.hostAgentHandlers.HandleLookup)))
 	r.mux.HandleFunc("/api/agents/osquery/report", RequireAuth(r.config, RequireScope(config.ScopeOsqueryReport, osqueryAgentHandlers.HandleReport)))
+	r.mux.HandleFunc("/api/osquery/register", RequireAuth(r.config, RequireScope(config.ScopeOsqueryReport, osqueryAgentHandlers.HandleRegister)))
 	r.mux.HandleFunc("/api/osquery/reports", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, osqueryAgentHandlers.HandleAllReports)))
 	r.mux.HandleFunc("/api/agents/host/uninstall", RequireAuth(r.config, RequireScope(config.ScopeHostReport, r.hostAgentHandlers.HandleUninstall)))
 	r.mux.HandleFunc("/api/agents/host/unlink", RequireAdmin(r.config, RequireScope(config.ScopeHostManage, r.hostAgentHandlers.HandleUnlink)))

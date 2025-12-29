@@ -29,6 +29,42 @@ func NewOsqueryAgentHandlers(dataPath string) *OsqueryAgentHandlers {
 	return &OsqueryAgentHandlers{store: store}
 }
 
+func (h *OsqueryAgentHandlers) HandleRegister(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var regReq struct {
+		AgentID  string `json:"agent_id"`
+		Hostname string `json:"hostname"`
+		Version  string `json:"version"`
+	}
+
+	if err := json.NewDecoder(req.Body).Decode(&regReq); err != nil {
+		log.Warn().Err(err).Msg("Failed to decode osquery registration request")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	agentID := regReq.AgentID
+	if agentID == "" {
+		agentID = regReq.Hostname
+	}
+
+	log.Info().
+		Str("agent_id", agentID).
+		Str("hostname", regReq.Hostname).
+		Str("version", regReq.Version).
+		Msg("osquery agent registered")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Agent registered successfully",
+	})
+}
+
 func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodGet {
 		h.handleGetReport(w, req)
