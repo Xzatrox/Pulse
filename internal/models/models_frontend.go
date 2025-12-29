@@ -11,6 +11,7 @@ type NodeFrontend struct {
 	DisplayName                  string       `json:"displayName"`
 	Instance                     string       `json:"instance"`
 	Host                         string       `json:"host,omitempty"`
+	GuestURL                     string       `json:"guestURL,omitempty"` // Optional guest-accessible URL (for navigation)
 	Status                       string       `json:"status"`
 	Type                         string       `json:"type"`
 	CPU                          float64      `json:"cpu"`
@@ -261,10 +262,21 @@ type DockerContainerFrontend struct {
 	Networks            []DockerContainerNetworkFrontend `json:"networks,omitempty"`
 	WritableLayerBytes  int64                            `json:"writableLayerBytes,omitempty"`
 	RootFilesystemBytes int64                            `json:"rootFilesystemBytes,omitempty"`
-	BlockIO             *DockerContainerBlockIOFrontend  `json:"blockIo,omitempty"`
-	Mounts              []DockerContainerMountFrontend   `json:"mounts,omitempty"`
-	Podman              *DockerPodmanContainerFrontend   `json:"podman,omitempty"`
+	BlockIO             *DockerContainerBlockIOFrontend      `json:"blockIo,omitempty"`
+	Mounts              []DockerContainerMountFrontend       `json:"mounts,omitempty"`
+	Podman              *DockerPodmanContainerFrontend       `json:"podman,omitempty"`
+	UpdateStatus        *DockerContainerUpdateStatusFrontend `json:"updateStatus,omitempty"`
 }
+
+// DockerContainerUpdateStatusFrontend tracks the image update status for a container.
+type DockerContainerUpdateStatusFrontend struct {
+	UpdateAvailable bool   `json:"updateAvailable"`
+	CurrentDigest   string `json:"currentDigest,omitempty"`
+	LatestDigest    string `json:"latestDigest,omitempty"`
+	LastChecked     int64  `json:"lastChecked"`
+	Error           string `json:"error,omitempty"` // e.g., "rate limited", "auth required"
+}
+
 
 // DockerContainerPortFrontend represents a container port mapping
 type DockerContainerPortFrontend struct {
@@ -428,9 +440,22 @@ type HostFrontend struct {
 
 // HostSensorSummaryFrontend mirrors HostSensorSummary with primitives for the frontend.
 type HostSensorSummaryFrontend struct {
-	TemperatureCelsius map[string]float64 `json:"temperatureCelsius,omitempty"`
-	FanRPM             map[string]float64 `json:"fanRpm,omitempty"`
-	Additional         map[string]float64 `json:"additional,omitempty"`
+	TemperatureCelsius map[string]float64       `json:"temperatureCelsius,omitempty"`
+	FanRPM             map[string]float64       `json:"fanRpm,omitempty"`
+	Additional         map[string]float64       `json:"additional,omitempty"`
+	SMART              []HostDiskSMARTFrontend  `json:"smart,omitempty"` // S.M.A.R.T. disk data
+}
+
+// HostDiskSMARTFrontend represents S.M.A.R.T. data for a disk from a host agent.
+type HostDiskSMARTFrontend struct {
+	Device      string `json:"device"`            // Device name (e.g., sda)
+	Model       string `json:"model,omitempty"`   // Disk model
+	Serial      string `json:"serial,omitempty"`  // Serial number
+	WWN         string `json:"wwn,omitempty"`     // World Wide Name
+	Type        string `json:"type,omitempty"`    // Transport type: sata, sas, nvme
+	Temperature int    `json:"temperature"`       // Temperature in Celsius
+	Health      string `json:"health,omitempty"`  // PASSED, FAILED, UNKNOWN
+	Standby     bool   `json:"standby,omitempty"` // True if disk was in standby
 }
 
 // StorageFrontend represents Storage with frontend-friendly field names

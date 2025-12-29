@@ -19,6 +19,7 @@ func (n Node) ToFrontend() NodeFrontend {
 		DisplayName:                  n.DisplayName,
 		Instance:                     n.Instance,
 		Host:                         n.Host,
+		GuestURL:                     n.GuestURL,
 		Status:                       n.Status,
 		Type:                         n.Type,
 		CPU:                          n.CPU,
@@ -599,6 +600,16 @@ func (c DockerContainer) ToFrontend() DockerContainerFrontend {
 		}
 	}
 
+	if c.UpdateStatus != nil {
+		container.UpdateStatus = &DockerContainerUpdateStatusFrontend{
+			UpdateAvailable: c.UpdateStatus.UpdateAvailable,
+			CurrentDigest:   c.UpdateStatus.CurrentDigest,
+			LatestDigest:    c.UpdateStatus.LatestDigest,
+			LastChecked:     timeToUnixMillis(c.UpdateStatus.LastChecked),
+			Error:           c.UpdateStatus.Error,
+		}
+	}
+
 	return container
 }
 
@@ -708,7 +719,7 @@ func (s DockerSwarmInfo) ToFrontend() DockerSwarmFrontend {
 }
 
 func hostSensorSummaryToFrontend(src HostSensorSummary) *HostSensorSummaryFrontend {
-	if len(src.TemperatureCelsius) == 0 && len(src.FanRPM) == 0 && len(src.Additional) == 0 {
+	if len(src.TemperatureCelsius) == 0 && len(src.FanRPM) == 0 && len(src.Additional) == 0 && len(src.SMART) == 0 {
 		return nil
 	}
 
@@ -721,6 +732,21 @@ func hostSensorSummaryToFrontend(src HostSensorSummary) *HostSensorSummaryFronte
 	}
 	if len(src.Additional) > 0 {
 		dest.Additional = copyStringFloatMap(src.Additional)
+	}
+	if len(src.SMART) > 0 {
+		dest.SMART = make([]HostDiskSMARTFrontend, len(src.SMART))
+		for i, disk := range src.SMART {
+			dest.SMART[i] = HostDiskSMARTFrontend{
+				Device:      disk.Device,
+				Model:       disk.Model,
+				Serial:      disk.Serial,
+				WWN:         disk.WWN,
+				Type:        disk.Type,
+				Temperature: disk.Temperature,
+				Health:      disk.Health,
+				Standby:     disk.Standby,
+			}
+		}
 	}
 	return dest
 }

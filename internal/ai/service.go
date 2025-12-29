@@ -474,6 +474,7 @@ func (s *Service) StartPatrol(ctx context.Context) {
 		AnalyzeStorage: cfg.PatrolAnalyzeStorage,
 	}
 	patrol.SetConfig(patrolCfg)
+	patrol.SetProactiveMode(cfg.UseProactiveThresholds)
 	patrol.Start(ctx)
 
 	// Configure alert-triggered analyzer (also Pro-only)
@@ -532,9 +533,13 @@ func (s *Service) ReconfigurePatrol() {
 	}
 	patrol.SetConfig(patrolCfg)
 
+	// Update proactive threshold mode
+	patrol.SetProactiveMode(cfg.UseProactiveThresholds)
+
 	log.Info().
 		Bool("enabled", patrolCfg.Enabled).
 		Dur("interval", patrolCfg.Interval).
+		Bool("proactiveThresholds", cfg.UseProactiveThresholds).
 		Msg("Patrol configuration updated")
 
 	// Update alert-triggered analyzer (re-check license on each config change)
@@ -1725,8 +1730,8 @@ Always execute the commands rather than telling the user how to do it.`
 		}
 	}
 
-	// Stream the final content
-	callback(StreamEvent{Type: "content", Data: finalContent})
+	// Don't stream finalContent here - it was already streamed in the iteration above
+	// Sending it again causes duplicate responses (issue #947)
 	callback(StreamEvent{Type: "done"})
 
 	return &ExecuteResponse{

@@ -227,6 +227,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- URL Normalization ---
+# Strip trailing slashes from PULSE_URL to prevent double-slash URLs
+# (e.g., http://host:7655//download/... which would match frontend routes)
+if [[ -n "$PULSE_URL" ]]; then
+    PULSE_URL="${PULSE_URL%/}"
+fi
+
 # --- Platform Auto-Detection ---
 # Only auto-detect if flags weren't explicitly set
 log_info "Detecting available platforms..."
@@ -1170,10 +1177,36 @@ fi
 # 5. Linux (Systemd)
 if command -v systemctl >/dev/null 2>&1; then
     UNIT="/etc/systemd/system/${AGENT_NAME}.service"
+    TOKEN_DIR="/var/lib/pulse-agent"
+    TOKEN_FILE="${TOKEN_DIR}/token"
     log_info "Configuring Systemd service at $UNIT..."
 
-    # Build command line args
-    build_exec_args
+    # Write token to secure file (not visible in ps or service file)
+    mkdir -p "$TOKEN_DIR"
+    echo -n "$PULSE_TOKEN" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    chown root:root "$TOKEN_FILE"
+    log_info "Token stored securely at $TOKEN_FILE (mode 600)"
+
+    # Build command line args WITHOUT the token (token is read from file)
+    EXEC_ARGS="--url ${PULSE_URL} --interval ${INTERVAL}"
+    # Always pass enable-host flag since agent defaults to true
+    if [[ "$ENABLE_HOST" == "true" ]]; then
+        EXEC_ARGS="$EXEC_ARGS --enable-host"
+    else
+        EXEC_ARGS="$EXEC_ARGS --enable-host=false"
+    fi
+    if [[ "$ENABLE_DOCKER" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-docker"; fi
+    if [[ "$ENABLE_KUBERNETES" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-kubernetes"; fi
+    if [[ "$ENABLE_PROXMOX" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-proxmox"; fi
+    if [[ -n "$PROXMOX_TYPE" ]]; then EXEC_ARGS="$EXEC_ARGS --proxmox-type ${PROXMOX_TYPE}"; fi
+    if [[ "$INSECURE" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --insecure"; fi
+    if [[ "$ENABLE_COMMANDS" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-commands"; fi
+    if [[ -n "$AGENT_ID" ]]; then EXEC_ARGS="$EXEC_ARGS --agent-id ${AGENT_ID}"; fi
+    # Add disk exclude patterns
+    for pattern in "${DISK_EXCLUDES[@]}"; do
+        EXEC_ARGS="$EXEC_ARGS --disk-exclude '${pattern}'"
+    done
 
     cat > "$UNIT" <<EOF
 [Unit]
@@ -1192,6 +1225,9 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
+    # Restrict service file permissions (contains no secrets now, but good practice)
+    chmod 644 "$UNIT"
+
     systemctl daemon-reload
     systemctl enable "${AGENT_NAME}"
     systemctl restart "${AGENT_NAME}"
@@ -1199,6 +1235,7 @@ EOF
         log_info "Upgrade complete! Agent restarted with new configuration."
     else
         log_info "Installation complete! Agent service started."
+        log_info "Token file: $TOKEN_FILE (mode 600, root only)"
     fi
     exit 0
 fi

@@ -242,6 +242,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/api/temperature-proxy/host-status", r.requireSensorProxyEnabled(RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, r.handleHostProxyStatus))))
 	r.mux.HandleFunc("/api/agents/docker/commands/", RequireAuth(r.config, RequireScope(config.ScopeDockerReport, r.dockerAgentHandlers.HandleCommandAck)))
 	r.mux.HandleFunc("/api/agents/docker/hosts/", RequireAdmin(r.config, RequireScope(config.ScopeDockerManage, r.dockerAgentHandlers.HandleDockerHostActions)))
+	r.mux.HandleFunc("/api/agents/docker/containers/update", RequireAdmin(r.config, RequireScope(config.ScopeDockerManage, r.dockerAgentHandlers.HandleContainerUpdate)))
 	r.mux.HandleFunc("/api/agents/kubernetes/clusters/", RequireAdmin(r.config, RequireScope(config.ScopeKubernetesManage, r.kubernetesAgentHandlers.HandleClusterActions)))
 	r.mux.HandleFunc("/api/version", r.handleVersion)
 	r.mux.HandleFunc("/api/storage/", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, r.handleStorage)))
@@ -1183,6 +1184,16 @@ func (r *Router) setupRoutes() {
 	r.aiSettingsHandler.SetMetadataProvider(metadataProvider)
 	// Wire license checker for Pro feature gating (AI Patrol, Alert Analysis, Auto-Fix)
 	r.aiSettingsHandler.SetLicenseChecker(r.licenseHandlers.Service())
+	// Wire license checker for alert manager Pro features (Update Alerts)
+	if r.monitor != nil {
+		alertMgr := r.monitor.GetAlertManager()
+		if alertMgr != nil {
+			licSvc := r.licenseHandlers.Service()
+			alertMgr.SetLicenseChecker(func(feature string) bool {
+				return licSvc.HasFeature(feature)
+			})
+		}
+	}
 	r.mux.HandleFunc("/api/settings/ai", RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, r.aiSettingsHandler.HandleGetAISettings)))
 	r.mux.HandleFunc("/api/settings/ai/update", RequireAdmin(r.config, RequireScope(config.ScopeSettingsWrite, r.aiSettingsHandler.HandleUpdateAISettings)))
 	r.mux.HandleFunc("/api/ai/test", RequireAdmin(r.config, RequireScope(config.ScopeSettingsWrite, r.aiSettingsHandler.HandleTestAIConnection)))
