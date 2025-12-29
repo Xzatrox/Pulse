@@ -347,6 +347,7 @@ export interface DockerContainer {
   id: string;
   name: string;
   image: string;
+  imageDigest?: string; // Current image digest (sha256:...)
   state: string;
   status: string;
   health?: string;
@@ -369,6 +370,16 @@ export interface DockerContainer {
   blockIo?: DockerContainerBlockIO;
   mounts?: DockerContainerMount[];
   podman?: PodmanContainerMetadata;
+  updateStatus?: DockerContainerUpdateStatus; // Image update detection status
+}
+
+// Update status for container images
+export interface DockerContainerUpdateStatus {
+  updateAvailable: boolean;
+  currentDigest?: string;
+  latestDigest?: string;
+  lastChecked: number;
+  error?: string;
 }
 
 export interface DockerContainerPort {
@@ -466,6 +477,18 @@ export interface HostSensorSummary {
   temperatureCelsius?: Record<string, number>;
   fanRpm?: Record<string, number>;
   additional?: Record<string, number>;
+  smart?: HostDiskSMART[]; // S.M.A.R.T. disk data
+}
+
+export interface HostDiskSMART {
+  device: string;        // Device name (e.g., sda)
+  model?: string;        // Disk model
+  serial?: string;       // Serial number
+  wwn?: string;          // World Wide Name
+  type?: string;         // Transport type: sata, sas, nvme
+  temperature: number;   // Temperature in Celsius
+  health?: string;       // PASSED, FAILED, UNKNOWN
+  standby?: boolean;     // True if disk was in standby
 }
 
 export interface HostRAIDArray {

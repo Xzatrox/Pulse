@@ -16,6 +16,8 @@ import { DockerHostMetadataAPI, type DockerHostMetadata } from '@/api/dockerHost
 import { logger } from '@/utils/logger';
 import { STORAGE_KEYS } from '@/utils/localStorage';
 import { DEGRADED_HEALTH_STATUSES, OFFLINE_HEALTH_STATUSES } from '@/utils/status';
+import { MonitoringAPI } from '@/api/monitoring';
+import { showSuccess, showError, showToast } from '@/utils/toast';
 
 type DockerMetadataRecord = Record<string, DockerMetadata>;
 type DockerHostMetadataRecord = Record<string, DockerHostMetadata>;
@@ -349,6 +351,70 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
     setSelectedHostId((current) => (current === hostId ? null : hostId));
   };
 
+  const updateableContainers = createMemo(() => {
+    const containers: { hostId: string; containerId: string; containerName: string }[] = [];
+    sortedHosts().forEach((host) => {
+      if (!hostMatchesStatus(host)) return;
+      host.containers?.forEach((c) => {
+        if (c.updateStatus?.updateAvailable) {
+          containers.push({
+            hostId: host.id,
+            containerId: c.id,
+            containerName: c.name || c.id,
+          });
+        }
+      });
+    });
+    return containers;
+  });
+
+  const handleUpdateAll = async () => {
+    const targets = updateableContainers();
+    if (targets.length === 0) return;
+
+    // Initial toast
+    showToast(
+      'info',
+      'Batch Update Started',
+      `Preparing to update ${targets.length} containers...`,
+      10000,
+    );
+
+    let successCount = 0;
+    let failCount = 0;
+
+    // Process in chunks of 5 to avoid overloading the browser/network
+    const chunkSize = 5;
+    for (let i = 0; i < targets.length; i += chunkSize) {
+      const chunk = targets.slice(i, i + chunkSize);
+
+      // Update progress toast (if we had a way to update existing toasts, which we might not have in this simple util, but we can emit new ones or just rely on the final report)
+      // For now, let's just process.
+
+      await Promise.all(chunk.map(async (target) => {
+        try {
+          await MonitoringAPI.updateDockerContainer(
+            target.hostId,
+            target.containerId,
+            target.containerName,
+          );
+          successCount++;
+        } catch (err) {
+          failCount++;
+          logger.error(`Failed to trigger update for ${target.containerName}`, err);
+        }
+      }));
+    }
+
+    if (failCount === 0) {
+      showSuccess(`Successfully queued updates for all ${targets.length} containers.`);
+    } else if (successCount === 0) {
+      showError(`Failed to queue any updates. Check console for details.`);
+    } else {
+      showToast('warning', 'Batch Update Completed', `Queued ${successCount} updates. ${failCount} failed.`);
+    }
+  };
+
   const renderFilter = () => (
     <DockerFilter
       search={search}
@@ -363,6 +429,8 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
       searchInputRef={(el) => {
         searchInputRef = el;
       }}
+      updateAvailableCount={updateableContainers().length}
+      onUpdateAll={handleUpdateAll}
     />
   );
 

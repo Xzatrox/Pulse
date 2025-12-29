@@ -4,6 +4,7 @@ import { Portal } from 'solid-js/web';
 import { useNavigate } from '@solidjs/router';
 import type { Host, HostRAIDArray } from '@/types/api';
 import { formatBytes, formatRelativeTime, formatUptime } from '@/utils/format';
+import { formatTemperature } from '@/utils/temperature';
 import { Card } from '@/components/shared/Card';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { StackedDiskBar } from '@/components/Dashboard/StackedDiskBar';
@@ -152,10 +153,19 @@ function HostNetworkInfoCell(props: { networkInterfaces: NetworkInterface[] }) {
 }
 
 // Temperature cell with rich tooltip showing all sensor readings
+interface HostDiskSMARTForCell {
+  device: string;
+  model?: string;
+  temperature: number;
+  health?: string;
+  standby?: boolean;
+}
+
 interface HostSensorSummaryForCell {
   temperatureCelsius?: Record<string, number>;
   fanRpm?: Record<string, number>;
   additional?: Record<string, number>;
+  smart?: HostDiskSMARTForCell[];
 }
 
 function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null | undefined }) {
@@ -164,27 +174,42 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
 
   // Get the primary (highest) temperature for display
   const primaryTemp = createMemo(() => {
-    if (!props.sensors?.temperatureCelsius) return null;
-    const temps = Object.values(props.sensors.temperatureCelsius);
-    if (temps.length === 0) return null;
-    // Find package/composite temp first, otherwise show max
-    const keys = Object.keys(props.sensors.temperatureCelsius);
-    const packageKey = keys.find(k =>
-      k.toLowerCase().includes('package') ||
-      k.toLowerCase().includes('composite') ||
-      k.toLowerCase().includes('tctl')
-    );
-    if (packageKey) return props.sensors.temperatureCelsius[packageKey];
-    return Math.max(...temps);
+    // First try CPU/sensor temperatures
+    if (props.sensors?.temperatureCelsius) {
+      const temps = Object.values(props.sensors.temperatureCelsius);
+      if (temps.length > 0) {
+        // Find package/composite temp first, otherwise show max
+        const keys = Object.keys(props.sensors.temperatureCelsius);
+        const packageKey = keys.find(k =>
+          k.toLowerCase().includes('package') ||
+          k.toLowerCase().includes('composite') ||
+          k.toLowerCase().includes('tctl')
+        );
+        if (packageKey) return props.sensors.temperatureCelsius[packageKey];
+        return Math.max(...temps);
+      }
+    }
+    // Fall back to max SMART disk temperature if no sensor temps
+    if (props.sensors?.smart && props.sensors.smart.length > 0) {
+      const diskTemps = props.sensors.smart
+        .filter(d => !d.standby && d.temperature > 0)
+        .map(d => d.temperature);
+      if (diskTemps.length > 0) {
+        return Math.max(...diskTemps);
+      }
+    }
+    return null;
   });
 
   const hasSensors = () => {
     const temps = props.sensors?.temperatureCelsius;
     const fans = props.sensors?.fanRpm;
     const additional = props.sensors?.additional;
+    const smart = props.sensors?.smart;
     return (temps && Object.keys(temps).length > 0) ||
       (fans && Object.keys(fans).length > 0) ||
-      (additional && Object.keys(additional).length > 0);
+      (additional && Object.keys(additional).length > 0) ||
+      (smart && smart.length > 0);
   };
 
   // Color based on temperature
@@ -237,6 +262,12 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
     return Object.entries(props.sensors.additional).sort(([a], [b]) => a.localeCompare(b));
   });
 
+  // Sort SMART disks by device name
+  const sortedSmart = createMemo(() => {
+    if (!props.sensors?.smart) return [];
+    return [...props.sensors.smart].sort((a, b) => a.device.localeCompare(b.device));
+  });
+
   // Format sensor name for display (e.g., "nct6687_cpu_fan" -> "CPU Fan")
   const formatSensorName = (name: string) => {
     // Remove chip prefix (e.g., "nct6687_" or "coretemp_")
@@ -255,7 +286,7 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
         onMouseLeave={handleMouseLeave}
       >
         <Show when={primaryTemp() !== null} fallback={<span class="text-gray-400">—</span>}>
-          {Math.round(primaryTemp()!)}°C
+          {formatTemperature(primaryTemp())}
         </Show>
       </span>
 
@@ -282,7 +313,41 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
                       return (
                         <div class="flex justify-between gap-3 py-0.5">
                           <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
-                          <span class={`font-medium font-mono ${colorClass}`}>{Math.round(temp)}°C</span>
+                          <span class={`font-medium font-mono ${colorClass}`}>{formatTemperature(temp)}</span>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+
+              {/* Disk temperatures section (SMART) */}
+              <Show when={sortedSmart().length > 0}>
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                  Disk Temperatures
+                </div>
+                <div class="space-y-0.5 mb-2">
+                  <For each={sortedSmart()}>
+                    {(disk) => {
+                      if (disk.standby) {
+                        return (
+                          <div class="flex justify-between gap-3 py-0.5">
+                            <span class="text-gray-400 truncate max-w-[140px]" title={disk.model}>
+                              {disk.device}
+                            </span>
+                            <span class="font-medium font-mono text-gray-500">standby</span>
+                          </div>
+                        );
+                      }
+                      const temp = disk.temperature;
+                      // For HDDs, 45°C is warm, 50°C+ is hot; for SSDs use higher thresholds
+                      const colorClass = temp >= 55 ? 'text-red-400' : temp >= 45 ? 'text-yellow-400' : 'text-gray-200';
+                      return (
+                        <div class="flex justify-between gap-3 py-0.5">
+                          <span class="text-gray-400 truncate max-w-[140px]" title={disk.model}>
+                            {disk.device}
+                          </span>
+                          <span class={`font-medium font-mono ${colorClass}`}>{formatTemperature(temp)}</span>
                         </div>
                       );
                     }}
@@ -319,7 +384,7 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
                       return (
                         <div class="flex justify-between gap-3 py-0.5">
                           <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
-                          <span class={`font-medium font-mono ${colorClass}`}>{Math.round(temp)}°C</span>
+                          <span class={`font-medium font-mono ${colorClass}`}>{formatTemperature(temp)}</span>
                         </div>
                       );
                     }}
@@ -979,16 +1044,17 @@ interface HostRowProps {
 }
 
 const HostRow: Component<HostRowProps> = (props) => {
-  const { host } = props;
+  // NOTE: Do NOT destructure props.host - it breaks SolidJS reactivity!
+  // Always access props.host directly to ensure updates flow through.
 
   // Check if this host is in AI context
-  const isInAIContext = createMemo(() => aiChatStore.enabled && aiChatStore.hasContextItem(host.id));
+  const isInAIContext = createMemo(() => aiChatStore.enabled && aiChatStore.hasContextItem(props.host.id));
 
   // URL editing using shared hook
   const urlEdit = createUrlEditState();
 
   const handleStartEditingUrl = (e: MouseEvent) => {
-    urlEdit.startEditing(host.id, props.customUrl || '', e);
+    urlEdit.startEditing(props.host.id, props.customUrl || '', e);
   };
 
   const handleSaveUrl = async () => {
@@ -996,10 +1062,10 @@ const HostRow: Component<HostRowProps> = (props) => {
     urlEdit.setIsSaving(true);
     try {
       if (url) {
-        await props.onUpdateCustomUrl(host.id, url);
+        await props.onUpdateCustomUrl(props.host.id, url);
         showSuccess('Host URL saved');
       } else {
-        await props.onDeleteCustomUrl(host.id);
+        await props.onDeleteCustomUrl(props.host.id);
         showSuccess('Host URL removed');
       }
       urlEdit.finishEditing();
@@ -1013,7 +1079,7 @@ const HostRow: Component<HostRowProps> = (props) => {
   const handleDeleteUrl = async () => {
     urlEdit.setIsSaving(true);
     try {
-      await props.onDeleteCustomUrl(host.id);
+      await props.onDeleteCustomUrl(props.host.id);
       showSuccess('Host URL removed');
       urlEdit.finishEditing();
     } catch (err) {
@@ -1025,16 +1091,16 @@ const HostRow: Component<HostRowProps> = (props) => {
 
   // Build context for AI - includes routing fields
   const buildHostContext = (): Record<string, unknown> => ({
-    hostName: host.displayName || host.hostname,
-    hostname: host.hostname,
-    node: host.hostname,           // Used by AI for command routing
-    target_host: host.hostname,    // Explicit routing hint
-    platform: host.platform,
-    osName: host.osName,
-    osVersion: host.osVersion,
-    cpuUsage: host.cpuUsage ? `${host.cpuUsage.toFixed(1)}%` : undefined,
-    memoryUsage: host.memory?.usage ? `${host.memory.usage.toFixed(1)}%` : undefined,
-    uptime: host.uptimeSeconds ? formatUptime(host.uptimeSeconds) : undefined,
+    hostName: props.host.displayName || props.host.hostname,
+    hostname: props.host.hostname,
+    node: props.host.hostname,           // Used by AI for command routing
+    target_host: props.host.hostname,    // Explicit routing hint
+    platform: props.host.platform,
+    osName: props.host.osName,
+    osVersion: props.host.osVersion,
+    cpuUsage: props.host.cpuUsage ? `${props.host.cpuUsage.toFixed(1)}%` : undefined,
+    memoryUsage: props.host.memory?.usage ? `${props.host.memory.usage.toFixed(1)}%` : undefined,
+    uptime: props.host.uptimeSeconds ? formatUptime(props.host.uptimeSeconds) : undefined,
   });
 
   // Handle row click - toggle AI context selection
@@ -1046,10 +1112,10 @@ const HostRow: Component<HostRowProps> = (props) => {
 
     // If AI is enabled, toggle AI context
     if (aiChatStore.enabled) {
-      if (aiChatStore.hasContextItem(host.id)) {
-        aiChatStore.removeContextItem(host.id);
+      if (aiChatStore.hasContextItem(props.host.id)) {
+        aiChatStore.removeContextItem(props.host.id);
       } else {
-        aiChatStore.addContextItem('host', host.id, host.displayName || host.hostname, buildHostContext());
+        aiChatStore.addContextItem('host', props.host.id, props.host.displayName || props.host.hostname, buildHostContext());
         if (!aiChatStore.isOpen) {
           aiChatStore.open();
         }
@@ -1057,10 +1123,11 @@ const HostRow: Component<HostRowProps> = (props) => {
     }
   };
 
-  const hostStatus = createMemo(() => getHostStatusIndicator(host));
-  const isOnline = () => host.status === 'online';
-  const cpuPercent = host.cpuUsage ?? 0;
-  const diskStats = props.getDiskStats(host);
+  // Reactive getters to ensure values update when WebSocket data changes
+  const hostStatus = createMemo(() => getHostStatusIndicator(props.host));
+  const isOnline = () => props.host.status === 'online';
+  const cpuPercent = () => props.host.cpuUsage ?? 0;
+  const diskStats = () => props.getDiskStats(props.host);
 
   const rowClass = () => {
     const base = 'transition-all duration-200';
@@ -1086,16 +1153,16 @@ const HostRow: Component<HostRowProps> = (props) => {
             <div class="min-w-0 flex items-center gap-1.5 group/name">
               <div>
                 <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 whitespace-nowrap">
-                  {host.displayName || host.hostname || host.id}
+                  {props.host.displayName || props.host.hostname || props.host.id}
                 </p>
-                <Show when={host.displayName && host.displayName !== host.hostname}>
+                <Show when={props.host.displayName && props.host.displayName !== props.host.hostname}>
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 whitespace-nowrap">
-                    {host.hostname}
+                    {props.host.hostname}
                   </p>
                 </Show>
-                <Show when={host.lastSeen}>
+                <Show when={props.host.lastSeen}>
                   <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 whitespace-nowrap">
-                    Updated {formatRelativeTime(host.lastSeen!)}
+                    Updated {formatRelativeTime(props.host.lastSeen!)}
                   </p>
                 </Show>
               </div>
@@ -1151,10 +1218,10 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('platform')}>
           <td class="px-2 py-1 align-middle">
             <div class="text-xs text-gray-700 dark:text-gray-300">
-              <p class="font-medium capitalize whitespace-nowrap">{host.platform || '—'}</p>
-              <Show when={host.osName}>
+              <p class="font-medium capitalize whitespace-nowrap">{props.host.platform || '—'}</p>
+              <Show when={props.host.osName}>
                 <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 whitespace-nowrap">
-                  {host.osName} {host.osVersion}
+                  {props.host.osName} {props.host.osVersion}
                 </p>
               </Show>
             </div>
@@ -1166,9 +1233,9 @@ const HostRow: Component<HostRowProps> = (props) => {
           <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
               <EnhancedCPUBar
-                usage={cpuPercent}
-                loadAverage={host.loadAverage?.[0]}
-                cores={props.isMobile() ? undefined : host.cpuCount}
+                usage={cpuPercent()}
+                loadAverage={props.host.loadAverage?.[0]}
+                cores={props.isMobile() ? undefined : props.host.cpuCount}
               />
             </Show>
           </td>
@@ -1179,11 +1246,11 @@ const HostRow: Component<HostRowProps> = (props) => {
           <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
               <StackedMemoryBar
-                used={host.memory?.used || 0}
-                total={host.memory?.total || 0}
-                balloon={host.memory?.balloon || 0}
-                swapUsed={host.memory?.swapUsed || 0}
-                swapTotal={host.memory?.swapTotal || 0}
+                used={props.host.memory?.used || 0}
+                total={props.host.memory?.total || 0}
+                balloon={props.host.memory?.balloon || 0}
+                swapUsed={props.host.memory?.swapUsed || 0}
+                swapTotal={props.host.memory?.swapTotal || 0}
               />
             </Show>
           </td>
@@ -1194,12 +1261,12 @@ const HostRow: Component<HostRowProps> = (props) => {
           <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
               <StackedDiskBar
-                disks={host.disks}
+                disks={props.host.disks}
                 aggregateDisk={{
-                  total: diskStats.total,
-                  used: diskStats.used,
-                  free: diskStats.total - diskStats.used,
-                  usage: diskStats.percent / 100
+                  total: diskStats().total,
+                  used: diskStats().used,
+                  free: diskStats().total - diskStats().used,
+                  usage: diskStats().percent / 100
                 }}
               />
             </Show>
@@ -1210,7 +1277,7 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('temp')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <HostTemperatureCell sensors={host.sensors} />
+              <HostTemperatureCell sensors={props.host.sensors} />
             </div>
           </td>
         </Show>
@@ -1219,9 +1286,9 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('uptime')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <Show when={isOnline() && host.uptimeSeconds} fallback={<span class="text-xs text-gray-400">—</span>}>
+              <Show when={isOnline() && props.host.uptimeSeconds} fallback={<span class="text-xs text-gray-400">—</span>}>
                 <span class="text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                  {formatUptime(host.uptimeSeconds!)}
+                  {formatUptime(props.host.uptimeSeconds!)}
                 </span>
               </Show>
             </div>
@@ -1232,9 +1299,9 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('agent')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <Show when={host.agentVersion} fallback={<span class="text-xs text-gray-400">—</span>}>
+              <Show when={props.host.agentVersion} fallback={<span class="text-xs text-gray-400">—</span>}>
                 <span class="text-xs text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                  {host.agentVersion}
+                  {props.host.agentVersion}
                 </span>
               </Show>
             </div>
@@ -1245,7 +1312,7 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('ip')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <HostNetworkInfoCell networkInterfaces={host.networkInterfaces || []} />
+              <HostNetworkInfoCell networkInterfaces={props.host.networkInterfaces || []} />
             </div>
           </td>
         </Show>
@@ -1254,9 +1321,9 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('arch')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <Show when={host.architecture} fallback={<span class="text-xs text-gray-400">—</span>}>
+              <Show when={props.host.architecture} fallback={<span class="text-xs text-gray-400">—</span>}>
                 <span class="text-[10px] text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                  {host.architecture}
+                  {props.host.architecture}
                 </span>
               </Show>
             </div>
@@ -1267,12 +1334,12 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('kernel')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <Show when={host.kernelVersion} fallback={<span class="text-xs text-gray-400">—</span>}>
+              <Show when={props.host.kernelVersion} fallback={<span class="text-xs text-gray-400">—</span>}>
                 <span
                   class="text-[10px] text-gray-700 dark:text-gray-300 max-w-[100px] truncate"
-                  title={host.kernelVersion}
+                  title={props.host.kernelVersion}
                 >
-                  {host.kernelVersion}
+                  {props.host.kernelVersion}
                 </span>
               </Show>
             </div>
@@ -1283,7 +1350,7 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('raid')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <HostRAIDStatusCell raid={host.raid} />
+              <HostRAIDStatusCell raid={props.host.raid} />
             </div>
           </td>
         </Show>
@@ -1291,7 +1358,7 @@ const HostRow: Component<HostRowProps> = (props) => {
 
       {/* URL editing popover - using shared component */}
       <UrlEditPopover
-        isOpen={urlEdit.isEditing() && urlEdit.editingId() === host.id}
+        isOpen={urlEdit.isEditing() && urlEdit.editingId() === props.host.id}
         value={urlEdit.editingValue()}
         position={urlEdit.position()}
         isSaving={urlEdit.isSaving()}

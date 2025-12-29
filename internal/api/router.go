@@ -246,6 +246,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/api/temperature-proxy/host-status", r.requireSensorProxyEnabled(RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, r.handleHostProxyStatus))))
 	r.mux.HandleFunc("/api/agents/docker/commands/", RequireAuth(r.config, RequireScope(config.ScopeDockerReport, r.dockerAgentHandlers.HandleCommandAck)))
 	r.mux.HandleFunc("/api/agents/docker/hosts/", RequireAdmin(r.config, RequireScope(config.ScopeDockerManage, r.dockerAgentHandlers.HandleDockerHostActions)))
+	r.mux.HandleFunc("/api/agents/docker/containers/update", RequireAdmin(r.config, RequireScope(config.ScopeDockerManage, r.dockerAgentHandlers.HandleContainerUpdate)))
 	r.mux.HandleFunc("/api/agents/kubernetes/clusters/", RequireAdmin(r.config, RequireScope(config.ScopeKubernetesManage, r.kubernetesAgentHandlers.HandleClusterActions)))
 	r.mux.HandleFunc("/api/version", r.handleVersion)
 	r.mux.HandleFunc("/api/storage/", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, r.handleStorage)))
@@ -380,6 +381,33 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/api/updates/plan", RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, updateHandlers.HandleGetUpdatePlan)))
 	r.mux.HandleFunc("/api/updates/history", RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, updateHandlers.HandleListUpdateHistory)))
 	r.mux.HandleFunc("/api/updates/history/entry", RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, updateHandlers.HandleGetUpdateHistoryEntry)))
+
+	// Infrastructure update detection routes (Docker containers, packages, etc.)
+	infraUpdateHandlers := NewUpdateDetectionHandlers(r.monitor)
+	r.mux.HandleFunc("/api/infra-updates", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, infraUpdateHandlers.HandleGetInfraUpdates)))
+	r.mux.HandleFunc("/api/infra-updates/summary", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, infraUpdateHandlers.HandleGetInfraUpdatesSummary)))
+	r.mux.HandleFunc("/api/infra-updates/check", RequireAuth(r.config, RequireScope(config.ScopeMonitoringWrite, infraUpdateHandlers.HandleTriggerInfraUpdateCheck)))
+	r.mux.HandleFunc("/api/infra-updates/host/", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, func(w http.ResponseWriter, req *http.Request) {
+		// Extract host ID from path: /api/infra-updates/host/{hostId}
+		hostID := strings.TrimPrefix(req.URL.Path, "/api/infra-updates/host/")
+		hostID = strings.TrimSuffix(hostID, "/")
+		if hostID == "" {
+			writeErrorResponse(w, http.StatusBadRequest, "missing_host_id", "Host ID is required", nil)
+			return
+		}
+		infraUpdateHandlers.HandleGetInfraUpdatesForHost(w, req, hostID)
+	})))
+	r.mux.HandleFunc("/api/infra-updates/", RequireAuth(r.config, RequireScope(config.ScopeMonitoringRead, func(w http.ResponseWriter, req *http.Request) {
+		// Extract resource ID from path: /api/infra-updates/{resourceId}
+		resourceID := strings.TrimPrefix(req.URL.Path, "/api/infra-updates/")
+		resourceID = strings.TrimSuffix(resourceID, "/")
+		if resourceID == "" || resourceID == "summary" || resourceID == "check" || strings.HasPrefix(resourceID, "host/") {
+			// Let specific handlers deal with these
+			http.NotFound(w, req)
+			return
+		}
+		infraUpdateHandlers.HandleGetInfraUpdateForResource(w, req, resourceID)
+	})))
 
 	// Config management routes
 	r.mux.HandleFunc("/api/config/nodes", func(w http.ResponseWriter, req *http.Request) {
@@ -1160,6 +1188,16 @@ func (r *Router) setupRoutes() {
 	r.aiSettingsHandler.SetMetadataProvider(metadataProvider)
 	// Wire license checker for Pro feature gating (AI Patrol, Alert Analysis, Auto-Fix)
 	r.aiSettingsHandler.SetLicenseChecker(r.licenseHandlers.Service())
+	// Wire license checker for alert manager Pro features (Update Alerts)
+	if r.monitor != nil {
+		alertMgr := r.monitor.GetAlertManager()
+		if alertMgr != nil {
+			licSvc := r.licenseHandlers.Service()
+			alertMgr.SetLicenseChecker(func(feature string) bool {
+				return licSvc.HasFeature(feature)
+			})
+		}
+	}
 	r.mux.HandleFunc("/api/settings/ai", RequireAdmin(r.config, RequireScope(config.ScopeSettingsRead, r.aiSettingsHandler.HandleGetAISettings)))
 	r.mux.HandleFunc("/api/settings/ai/update", RequireAdmin(r.config, RequireScope(config.ScopeSettingsWrite, r.aiSettingsHandler.HandleUpdateAISettings)))
 	r.mux.HandleFunc("/api/ai/test", RequireAdmin(r.config, RequireScope(config.ScopeSettingsWrite, r.aiSettingsHandler.HandleTestAIConnection)))

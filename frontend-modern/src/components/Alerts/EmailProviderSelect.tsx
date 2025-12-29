@@ -1,13 +1,7 @@
 import { createSignal, createEffect, Show, For } from 'solid-js';
 import { NotificationsAPI } from '@/api/notifications';
 import { logger } from '@/utils/logger';
-import {
-  formField,
-  labelClass,
-  controlClass,
-  formHelpText,
-  formCheckbox,
-} from '@/components/shared/Form';
+import { formField, labelClass, controlClass, formHelpText } from '@/components/shared/Form';
 
 interface EmailProvider {
   name: string;
@@ -161,10 +155,20 @@ export function EmailProviderSelect(props: EmailProviderSelectProps) {
           <label class={labelClass()}>SMTP port</label>
           <input
             type="number"
-            value={props.config.port}
-            onInput={(e) =>
-              props.onChange({ ...props.config, port: parseInt(e.currentTarget.value) || 587 })
-            }
+            value={props.config.port || ''}
+            onInput={(e) => {
+              const value = e.currentTarget.value;
+              // Allow empty field while typing, parse as number when valid
+              const port = value === '' ? 0 : parseInt(value, 10);
+              props.onChange({ ...props.config, port: isNaN(port) ? 0 : port });
+            }}
+            onBlur={(e) => {
+              // Apply default on blur if empty or invalid
+              const value = parseInt(e.currentTarget.value, 10);
+              if (!value || isNaN(value)) {
+                props.onChange({ ...props.config, port: 587 });
+              }
+            }}
             placeholder="587"
             class={controlClass('px-2 py-1.5')}
           />
@@ -249,28 +253,25 @@ export function EmailProviderSelect(props: EmailProviderSelectProps) {
         <Show when={showAdvanced()}>
           <div class="mt-3 space-y-3 text-xs text-gray-700 dark:text-gray-300">
             <div class="grid gap-3 sm:grid-cols-3">
-              <label class="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={props.config.tls}
-                  onChange={(e) =>
-                    props.onChange({ ...props.config, tls: e.currentTarget.checked })
-                  }
-                  class={`${formCheckbox} h-4 w-4`}
-                />
-                <span>Use TLS</span>
-              </label>
-              <label class="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={props.config.startTLS}
-                  onChange={(e) =>
-                    props.onChange({ ...props.config, startTLS: e.currentTarget.checked })
-                  }
-                  class={`${formCheckbox} h-4 w-4`}
-                />
-                <span>Use STARTTLS</span>
-              </label>
+              <div class="flex items-center gap-2">
+                <label class={labelClass('text-xs uppercase tracking-[0.08em]')}>Security</label>
+                <select
+                  value={props.config.tls ? 'tls' : props.config.startTLS ? 'starttls' : 'none'}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value;
+                    props.onChange({
+                      ...props.config,
+                      tls: value === 'tls',
+                      startTLS: value === 'starttls',
+                    });
+                  }}
+                  class={`${controlClass('px-2 py-1 text-sm')} min-w-[120px]`}
+                >
+                  <option value="none">None</option>
+                  <option value="starttls">STARTTLS (587)</option>
+                  <option value="tls">TLS/SSL (465)</option>
+                </select>
+              </div>
               <div class="flex w-full flex-wrap items-center gap-2 sm:flex-nowrap">
                 <label class={labelClass('text-xs uppercase tracking-[0.08em]')}>Rate limit</label>
                 <input

@@ -315,6 +315,7 @@ type DockerThresholdConfig struct {
 	ServiceCritGapPct        int                 `json:"serviceCriticalGapPercent"`          // % of desired tasks missing to trigger critical (default: 50)
 	StateDisableConnectivity bool                `json:"stateDisableConnectivity,omitempty"` // Disable container offline/state alerts globally
 	StatePoweredOffSeverity  AlertLevel          `json:"statePoweredOffSeverity,omitempty"`  // Default severity for container state/offline alerts
+	UpdateAlertDelayHours    int                 `json:"updateAlertDelayHours,omitempty"`    // Hours to wait before alerting on available image updates (default: 24, 0 = disabled)
 }
 
 // PMGThresholdConfig represents Proxmox Mail Gateway-specific alert thresholds
@@ -511,8 +512,9 @@ type Manager struct {
 	offlineConfirmations  map[string]int                  // Track consecutive offline counts for all resources
 	dockerOfflineCount    map[string]int                  // Track consecutive offline counts for Docker hosts
 	dockerStateConfirm    map[string]int                  // Track consecutive state confirmations for Docker containers
-	dockerRestartTracking map[string]*dockerRestartRecord // Track restart counts and times for restart loop detection
-	dockerLastExitCode    map[string]int                  // Track last exit code for OOM detection
+	dockerRestartTracking  map[string]*dockerRestartRecord // Track restart counts and times for restart loop detection
+	dockerLastExitCode     map[string]int                  // Track last exit code for OOM detection
+	dockerUpdateFirstSeen  map[string]time.Time            // Track when image updates were first detected for alert delay
 	// PMG quarantine growth tracking
 	pmgQuarantineHistory map[string][]pmgQuarantineSnapshot // Track quarantine snapshots for growth detection
 	// PMG anomaly detection tracking
@@ -528,6 +530,8 @@ type Manager struct {
 	// When a host agent is running on a Proxmox node, we prefer the host agent
 	// alerts and suppress the node alerts to avoid duplicate monitoring.
 	hostAgentHostnames map[string]struct{} // Normalized hostnames (lowercase)
+	// License checking for Pro-only alert features
+	hasProFeature func(feature string) bool
 }
 
 type ackRecord struct {
@@ -550,17 +554,18 @@ func NewManager() *Manager {
 		activeAlerts:          make(map[string]*Alert),
 		historyManager:        NewHistoryManager(alertsDir),
 		escalationStop:        make(chan struct{}),
-		alertRateLimit:        make(map[string][]time.Time),
-		recentAlerts:          make(map[string]*Alert),
-		suppressedUntil:       make(map[string]time.Time),
-		recentlyResolved:      make(map[string]*ResolvedAlert),
-		pendingAlerts:         make(map[string]time.Time),
-		nodeOfflineCount:      make(map[string]int),
-		offlineConfirmations:  make(map[string]int),
-		dockerOfflineCount:    make(map[string]int),
-		dockerStateConfirm:    make(map[string]int),
-		dockerRestartTracking: make(map[string]*dockerRestartRecord),
-		dockerLastExitCode:    make(map[string]int),
+		alertRateLimit:         make(map[string][]time.Time),
+		recentAlerts:           make(map[string]*Alert),
+		suppressedUntil:        make(map[string]time.Time),
+		recentlyResolved:       make(map[string]*ResolvedAlert),
+		pendingAlerts:          make(map[string]time.Time),
+		nodeOfflineCount:       make(map[string]int),
+		offlineConfirmations:   make(map[string]int),
+		dockerOfflineCount:     make(map[string]int),
+		dockerStateConfirm:     make(map[string]int),
+		dockerRestartTracking:  make(map[string]*dockerRestartRecord),
+		dockerLastExitCode:     make(map[string]int),
+		dockerUpdateFirstSeen:  make(map[string]time.Time),
 		pmgQuarantineHistory:  make(map[string][]pmgQuarantineSnapshot),
 		pmgAnomalyTrackers:    make(map[string]*pmgAnomalyTracker),
 		ackState:              make(map[string]ackRecord),
@@ -710,6 +715,14 @@ func NewManager() *Manager {
 	go m.trackingMapCleanup()
 
 	return m
+}
+
+// SetLicenseChecker sets the function used to check Pro license features.
+// This enables gating Pro-only alert features like update alerts.
+func (m *Manager) SetLicenseChecker(checker func(feature string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hasProFeature = checker
 }
 
 // addRecentlyResolvedUnlocked records a resolved alert assuming the caller does not hold m.mu.
@@ -1154,6 +1167,10 @@ func normalizeDockerDefaults(config *AlertConfig) {
 		config.DockerDefaults.StatePoweredOffSeverity = AlertLevelWarning
 	}
 	config.DockerDefaults.StatePoweredOffSeverity = normalizePoweredOffSeverity(config.DockerDefaults.StatePoweredOffSeverity)
+	// Default to 24 hours delay for update alerts; set to -1 to explicitly disable
+	if config.DockerDefaults.UpdateAlertDelayHours == 0 {
+		config.DockerDefaults.UpdateAlertDelayHours = 24
+	}
 }
 
 // normalizePMGDefaults ensures PMG (Proxmox Mail Gateway) defaults are set
@@ -3617,6 +3634,7 @@ func (m *Manager) evaluateDockerContainer(host models.DockerHost, container mode
 	m.checkDockerContainerRestartLoop(host, container, resourceID, containerName, instanceName, nodeName)
 	m.checkDockerContainerOOMKill(host, container, resourceID, containerName, instanceName, nodeName)
 	m.checkDockerContainerMemoryLimit(host, container, resourceID, containerName, instanceName, nodeName)
+	m.checkDockerContainerImageUpdate(host, container, resourceID, containerName, instanceName, nodeName)
 }
 
 func (m *Manager) evaluateDockerService(host models.DockerHost, service models.DockerService, resourceID string) {
@@ -4337,6 +4355,143 @@ func (m *Manager) clearDockerContainerMetricAlerts(resourceID string, metrics ..
 	}
 }
 
+// checkDockerContainerImageUpdate checks if an image update has been pending for too long
+func (m *Manager) checkDockerContainerImageUpdate(host models.DockerHost, container models.DockerContainer, resourceID, containerName, instanceName, nodeName string) {
+	alertID := fmt.Sprintf("docker-container-update-%s", resourceID)
+
+	// Check if update detection is enabled
+	m.mu.RLock()
+	delayHours := m.config.DockerDefaults.UpdateAlertDelayHours
+	hasProFeature := m.hasProFeature
+	m.mu.RUnlock()
+
+	// Update alerts are a Pro-only feature
+	// Free users still see update badges in the UI, but alerts require Pro
+	if hasProFeature != nil && !hasProFeature("update_alerts") {
+		// Not licensed for update alerts - clear any existing alert and tracking
+		m.clearAlert(alertID)
+		m.mu.Lock()
+		delete(m.dockerUpdateFirstSeen, resourceID)
+		m.mu.Unlock()
+		return
+	}
+
+	// Negative value means disabled
+	if delayHours < 0 {
+		m.clearAlert(alertID)
+		m.mu.Lock()
+		delete(m.dockerUpdateFirstSeen, resourceID)
+		m.mu.Unlock()
+		return
+	}
+
+	// Check if this container has an update status reported
+	if container.UpdateStatus == nil {
+		// No update status - clear any tracking and alerts
+		m.clearAlert(alertID)
+		m.mu.Lock()
+		delete(m.dockerUpdateFirstSeen, resourceID)
+		m.mu.Unlock()
+		return
+	}
+
+	// Check for errors in update detection (don't alert on errors)
+	if container.UpdateStatus.Error != "" {
+		// Update check failed - clear alert but keep tracking
+		m.clearAlert(alertID)
+		return
+	}
+
+	// Check if an update is available
+	if !container.UpdateStatus.UpdateAvailable {
+		// No update available - clear tracking and alert
+		m.clearAlert(alertID)
+		m.mu.Lock()
+		delete(m.dockerUpdateFirstSeen, resourceID)
+		m.mu.Unlock()
+		return
+	}
+
+	// Update is available - track when we first saw it
+	m.mu.Lock()
+	firstSeen, exists := m.dockerUpdateFirstSeen[resourceID]
+	if !exists {
+		firstSeen = time.Now()
+		m.dockerUpdateFirstSeen[resourceID] = firstSeen
+	}
+	m.mu.Unlock()
+
+	// Check if we've exceeded the delay threshold
+	pendingDuration := time.Since(firstSeen)
+	threshold := time.Duration(delayHours) * time.Hour
+	if pendingDuration < threshold {
+		// Not yet time to alert
+		log.Debug().
+			Str("container", containerName).
+			Str("host", host.DisplayName).
+			Str("image", container.Image).
+			Dur("pending", pendingDuration).
+			Dur("threshold", threshold).
+			Msg("Container update pending but below alert threshold")
+		return
+	}
+
+	// Create or update the alert
+	pendingHours := int(pendingDuration.Hours())
+	message := fmt.Sprintf("Docker container '%s' has an image update available for %d hours", containerName, pendingHours)
+
+	alert := &Alert{
+		ID:           alertID,
+		Type:         "docker-container-update",
+		Level:        AlertLevelWarning,
+		ResourceID:   resourceID,
+		ResourceName: containerName,
+		Node:         nodeName,
+		Instance:     instanceName,
+		Message:      message,
+		StartTime:    firstSeen,
+		LastSeen:     time.Now(),
+		Metadata: map[string]interface{}{
+			"resourceType":   "Docker Container",
+			"hostId":         host.ID,
+			"hostName":       host.DisplayName,
+			"hostHostname":   host.Hostname,
+			"containerId":    container.ID,
+			"containerName":  containerName,
+			"image":          container.Image,
+			"currentDigest":  container.UpdateStatus.CurrentDigest,
+			"latestDigest":   container.UpdateStatus.LatestDigest,
+			"lastChecked":    container.UpdateStatus.LastChecked,
+			"firstSeen":      firstSeen,
+			"pendingHours":   pendingHours,
+			"thresholdHours": delayHours,
+		},
+	}
+
+	m.mu.Lock()
+	if existing, ok := m.activeAlerts[alertID]; ok && existing != nil {
+		// Update existing alert
+		existing.LastSeen = time.Now()
+		existing.Message = message
+		existing.Metadata = alert.Metadata
+		m.mu.Unlock()
+		return
+	}
+	m.preserveAlertState(alertID, alert)
+	m.activeAlerts[alertID] = alert
+	m.recentAlerts[alertID] = alert
+	m.historyManager.AddAlert(*alert)
+	m.dispatchAlert(alert, false)
+	m.mu.Unlock()
+
+	log.Warn().
+		Str("container", containerName).
+		Str("host", host.DisplayName).
+		Str("image", container.Image).
+		Int("pendingHours", pendingHours).
+		Msg("Docker container has pending image update")
+}
+
 func (m *Manager) cleanupDockerContainerAlerts(host models.DockerHost, seen map[string]struct{}) {
 	prefix := fmt.Sprintf("docker:%s/", strings.TrimSpace(host.ID))
 
@@ -4355,6 +4510,14 @@ func (m *Manager) cleanupDockerContainerAlerts(host models.DockerHost, seen map[
 		if strings.HasPrefix(resourceID, prefix) {
 			if _, exists := seen[resourceID]; !exists {
 				delete(m.dockerStateConfirm, resourceID)
+			}
+		}
+	}
+	// Cleanup update tracking for removed containers
+	for resourceID := range m.dockerUpdateFirstSeen {
+		if strings.HasPrefix(resourceID, prefix) {
+			if _, exists := seen[resourceID]; !exists {
+				delete(m.dockerUpdateFirstSeen, resourceID)
 			}
 		}
 	}
@@ -4388,6 +4551,11 @@ func (m *Manager) clearDockerHostContainerAlerts(hostID string) {
 	for resourceID := range m.dockerLastExitCode {
 		if strings.HasPrefix(resourceID, prefix) {
 			delete(m.dockerLastExitCode, resourceID)
+		}
+	}
+	for resourceID := range m.dockerUpdateFirstSeen {
+		if strings.HasPrefix(resourceID, prefix) {
+			delete(m.dockerUpdateFirstSeen, resourceID)
 		}
 	}
 	m.mu.Unlock()
@@ -5991,7 +6159,9 @@ func (m *Manager) preserveAlertState(alertID string, updated *Alert) {
 
 func (m *Manager) removeActiveAlertNoLock(alertID string) {
 	delete(m.activeAlerts, alertID)
-	delete(m.ackState, alertID)
+	// NOTE: Don't delete ackState here - preserve it so if the same alert
+	// reappears (e.g., powered-off VM during backup), the acknowledgement
+	// is restored via preserveAlertState. ackState is cleaned up in Cleanup().
 }
 
 // GetActiveAlerts returns all active alerts
@@ -7774,6 +7944,17 @@ func (m *Manager) Cleanup(maxAge time.Duration) {
 	for id, alert := range m.activeAlerts {
 		if alert.Acknowledged && alert.AckTime != nil && now.Sub(*alert.AckTime) > maxAge {
 			m.removeActiveAlertNoLock(id)
+		}
+	}
+
+	// Clean up stale ackState entries for alerts that no longer exist
+	// Keep ackState for 1 hour to handle transient alert clears (e.g., backups)
+	ackStateTTL := 1 * time.Hour
+	for id, record := range m.ackState {
+		if _, alertExists := m.activeAlerts[id]; !alertExists {
+			if now.Sub(record.time) > ackStateTTL {
+				delete(m.ackState, id)
+			}
 		}
 	}
 

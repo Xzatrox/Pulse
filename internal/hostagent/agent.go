@@ -51,6 +51,9 @@ type Config struct {
 
 	// Disk filtering
 	DiskExclude []string // Mount points or path prefixes to exclude from disk monitoring
+
+	// Network configuration
+	ReportIP string // IP address to report instead of auto-detected (for multi-NIC systems)
 }
 
 // Agent is responsible for collecting host metrics and shipping them to Pulse.
@@ -71,6 +74,7 @@ type Agent struct {
 	agentID         string
 	agentVersion    string
 	updatedFrom     string // Previous version if recently auto-updated (reported once)
+	reportIP        string // User-specified IP to report (for multi-NIC systems)
 	interval        time.Duration
 	trimmedPulseURL string
 	reportBuffer    *buffer.Queue[agentshost.Report]
@@ -156,9 +160,11 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	platform := normalisePlatform(info.Platform)
-	osName := strings.TrimSpace(info.PlatformFamily)
+	// Use Platform (specific distro like "ubuntu") over PlatformFamily (distro family like "debian")
+	// This ensures Ubuntu shows as "ubuntu 24.04" not "debian 24.04" (refs #927)
+	osName := strings.TrimSpace(info.Platform)
 	if osName == "" {
-		osName = strings.TrimSpace(info.Platform)
+		osName = strings.TrimSpace(info.PlatformFamily)
 	}
 	osVersion := strings.TrimSpace(info.PlatformVersion)
 	kernelVersion := strings.TrimSpace(info.KernelVersion)
@@ -228,6 +234,7 @@ func New(cfg Config) (*Agent, error) {
 		agentID:         agentID,
 		agentVersion:    agentVersion,
 		updatedFrom:     updatedFrom,
+		reportIP:        strings.TrimSpace(cfg.ReportIP),
 		interval:        cfg.Interval,
 		trimmedPulseURL: pulseURL,
 		reportBuffer:    buffer.New[agentshost.Report](bufferCapacity),
@@ -388,6 +395,7 @@ func (a *Agent) buildReport(ctx context.Context) (agentshost.Report, error) {
 			CPUCount:      snapshot.CPUCount,
 			UptimeSeconds: int64(uptime),
 			LoadAverage:   append([]float64(nil), snapshot.LoadAverage...),
+			ReportIP:      a.reportIP,
 		},
 		Metrics: agentshost.Metrics{
 			CPUUsagePercent: snapshot.CPUUsagePercent,

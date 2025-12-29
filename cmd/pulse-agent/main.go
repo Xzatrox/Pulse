@@ -62,6 +62,12 @@ func main() {
 	logger := zerolog.New(os.Stdout).Level(cfg.LogLevel).With().Timestamp().Logger()
 	cfg.Logger = &logger
 
+	// 2a. Handle Self-Test
+	if cfg.SelfTest {
+		logger.Info().Msg("Self-test passed: config loaded and logger initialized")
+		os.Exit(0)
+	}
+
 	// 3. Check if running as Windows service
 	ranAsService, err := runAsWindowsService(cfg, logger)
 	if err != nil {
@@ -137,6 +143,7 @@ func main() {
 			ProxmoxType:        cfg.ProxmoxType,
 			EnableCommands:     cfg.EnableCommands,
 			DiskExclude:        cfg.DiskExclude,
+			ReportIP:           cfg.ReportIP,
 		}
 
 		agent, err := hostagent.New(hostCfg)
@@ -379,6 +386,10 @@ type Config struct {
 	// Disk filtering
 	DiskExclude []string // Mount points or patterns to exclude from disk monitoring
 
+	// Network configuration
+	ReportIP string // IP address to report (for multi-NIC systems)
+	SelfTest bool   // Perform self-test and exit
+
 	// Health/metrics server
 	HealthAddr string
 
@@ -420,6 +431,7 @@ func loadConfig() Config {
 	envKubeIncludeAllDeployments := utils.GetenvTrim("PULSE_KUBE_INCLUDE_ALL_DEPLOYMENTS")
 	envKubeMaxPods := utils.GetenvTrim("PULSE_KUBE_MAX_PODS")
 	envDiskExclude := utils.GetenvTrim("PULSE_DISK_EXCLUDE")
+	envReportIP := utils.GetenvTrim("PULSE_REPORT_IP")
 
 	// Defaults
 	defaultInterval := 30 * time.Second
@@ -461,7 +473,8 @@ func loadConfig() Config {
 
 	// Flags
 	urlFlag := flag.String("url", envURL, "Pulse server URL")
-	tokenFlag := flag.String("token", envToken, "Pulse API token")
+	tokenFlag := flag.String("token", envToken, "Pulse API token (prefer --token-file for security)")
+	tokenFileFlag := flag.String("token-file", "", "Path to file containing Pulse API token (more secure than --token)")
 	intervalFlag := flag.Duration("interval", defaultInterval, "Reporting interval")
 	hostnameFlag := flag.String("hostname", envHostname, "Override hostname")
 	agentIDFlag := flag.String("agent-id", envAgentID, "Override agent identifier")
@@ -483,7 +496,9 @@ func loadConfig() Config {
 	kubeIncludeAllPodsFlag := flag.Bool("kube-include-all-pods", utils.ParseBool(envKubeIncludeAllPods), "Include all non-succeeded pods (may be large)")
 	kubeIncludeAllDeploymentsFlag := flag.Bool("kube-include-all-deployments", utils.ParseBool(envKubeIncludeAllDeployments), "Include all deployments, not just problem ones")
 	kubeMaxPodsFlag := flag.Int("kube-max-pods", defaultInt(envKubeMaxPods, 200), "Max pods included in report")
+	reportIPFlag := flag.String("report-ip", envReportIP, "IP address to report (for multi-NIC systems)")
 	showVersion := flag.Bool("version", false, "Print the agent version and exit")
+	selfTest := flag.Bool("self-test", false, "Perform self-test and exit (used during auto-update)")
 
 	var tagFlags multiValue
 	flag.Var(&tagFlags, "tag", "Tag to apply (repeatable)")
@@ -507,9 +522,10 @@ func loadConfig() Config {
 		pulseURL = "http://localhost:7655"
 	}
 
-	token := strings.TrimSpace(*tokenFlag)
+	// Resolve token with priority: --token > --token-file > env > default file
+	token := resolveToken(*tokenFlag, *tokenFileFlag, envToken)
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "error: Pulse API token is required")
+		fmt.Fprintln(os.Stderr, "error: Pulse API token is required (use --token, --token-file, PULSE_TOKEN env, or /var/lib/pulse-agent/token)")
 		os.Exit(1)
 	}
 
@@ -560,6 +576,8 @@ func loadConfig() Config {
 		KubeIncludeAllDeployments: *kubeIncludeAllDeploymentsFlag,
 		KubeMaxPods:               *kubeMaxPodsFlag,
 		DiskExclude:               diskExclude,
+		ReportIP:                  strings.TrimSpace(*reportIPFlag),
+		SelfTest:                  *selfTest,
 	}
 }
 
@@ -659,6 +677,44 @@ func resolveEnableCommands(enableFlag, disableFlag bool, envEnable, envDisable s
 
 	// Default: commands disabled
 	return false
+}
+
+// resolveToken resolves the API token with priority:
+// 1. --token flag (direct value)
+// 2. --token-file flag (read from file)
+// 3. PULSE_TOKEN environment variable
+// 4. Default token file at /var/lib/pulse-agent/token
+//
+// Reading from a file is more secure than CLI args as tokens won't appear in `ps` output.
+func resolveToken(tokenFlag, tokenFileFlag, envToken string) string {
+	// 1. Direct token from --token flag
+	if t := strings.TrimSpace(tokenFlag); t != "" {
+		return t
+	}
+
+	// 2. Token from --token-file flag
+	if tokenFileFlag != "" {
+		if content, err := os.ReadFile(tokenFileFlag); err == nil {
+			if t := strings.TrimSpace(string(content)); t != "" {
+				return t
+			}
+		}
+	}
+
+	// 3. PULSE_TOKEN environment variable
+	if t := strings.TrimSpace(envToken); t != "" {
+		return t
+	}
+
+	// 4. Default token file (most secure method for systemd services)
+	defaultTokenFile := "/var/lib/pulse-agent/token"
+	if content, err := os.ReadFile(defaultTokenFile); err == nil {
+		if t := strings.TrimSpace(string(content)); t != "" {
+			return t
+		}
+	}
+
+	return ""
 }
 
 // initDockerWithRetry attempts to initialize the Docker agent with exponential backoff.

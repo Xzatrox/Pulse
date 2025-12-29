@@ -182,6 +182,7 @@ type Host struct {
 	LastSeen          time.Time              `json:"lastSeen"`
 	AgentVersion      string                 `json:"agentVersion,omitempty"`
 	CommandsEnabled   bool                   `json:"commandsEnabled,omitempty"` // Whether AI command execution is enabled
+	ReportIP          string                 `json:"reportIp,omitempty"`        // User-specified IP for multi-NIC systems
 	TokenID           string                 `json:"tokenId,omitempty"`
 	TokenName         string                 `json:"tokenName,omitempty"`
 	TokenHint         string                 `json:"tokenHint,omitempty"`
@@ -416,6 +417,7 @@ type DockerContainer struct {
 	ID                  string                       `json:"id"`
 	Name                string                       `json:"name"`
 	Image               string                       `json:"image"`
+	ImageDigest         string                       `json:"imageDigest,omitempty"` // Current image digest (sha256:...)
 	State               string                       `json:"state"`
 	Status              string                       `json:"status"`
 	Health              string                       `json:"health,omitempty"`
@@ -437,6 +439,16 @@ type DockerContainer struct {
 	BlockIO             *DockerContainerBlockIO      `json:"blockIo,omitempty"`
 	Mounts              []DockerContainerMount       `json:"mounts,omitempty"`
 	Podman              *DockerPodmanContainer       `json:"podman,omitempty"`
+	UpdateStatus        *DockerContainerUpdateStatus `json:"updateStatus,omitempty"` // Image update detection status
+}
+
+// DockerContainerUpdateStatus tracks the image update status for a container.
+type DockerContainerUpdateStatus struct {
+	UpdateAvailable bool      `json:"updateAvailable"`
+	CurrentDigest   string    `json:"currentDigest,omitempty"`
+	LatestDigest    string    `json:"latestDigest,omitempty"`
+	LastChecked     time.Time `json:"lastChecked"`
+	Error           string    `json:"error,omitempty"` // e.g., "rate limited", "auth required"
 }
 
 // DockerPodmanContainer captures Podman-specific annotations for a container.
@@ -2146,6 +2158,25 @@ func (s *State) TouchHost(hostID string, ts time.Time) bool {
 			host.LastSeen = ts
 			s.Hosts[i] = host
 			s.LastUpdate = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+// SetHostCommandsEnabled updates the CommandsEnabled flag for a host.
+// This allows the UI to immediately reflect config changes without waiting for agent confirmation.
+func (s *State) SetHostCommandsEnabled(hostID string, enabled bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, host := range s.Hosts {
+		if host.ID == hostID {
+			if host.CommandsEnabled != enabled {
+				host.CommandsEnabled = enabled
+				s.Hosts[i] = host
+				s.LastUpdate = time.Now()
+			}
 			return true
 		}
 	}
