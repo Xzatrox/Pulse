@@ -21,6 +21,7 @@ import (
 	"github.com/rcourtman/pulse-go-rewrite/internal/hostmetrics"
 	"github.com/rcourtman/pulse-go-rewrite/internal/mdadm"
 	"github.com/rcourtman/pulse-go-rewrite/internal/sensors"
+	"github.com/rcourtman/pulse-go-rewrite/internal/smartctl"
 	agentshost "github.com/rcourtman/pulse-go-rewrite/pkg/agents/host"
 	"github.com/rs/zerolog"
 	gohost "github.com/shirou/gopsutil/v4/host"
@@ -47,6 +48,9 @@ type Config struct {
 
 	// Security options
 	EnableCommands bool // If true, enables the command execution feature (AI auto-fix)
+
+	// Disk filtering
+	DiskExclude []string // Mount points or path prefixes to exclude from disk monitoring
 }
 
 // Agent is responsible for collecting host metrics and shipping them to Pulse.
@@ -79,14 +83,16 @@ var readFile = os.ReadFile
 var netInterfaces = net.Interfaces
 
 var (
-	hostInfoWithContext   = gohost.InfoWithContext
-	hostUptimeWithContext = gohost.UptimeWithContext
-	hostmetricsCollect    = hostmetrics.Collect
-	sensorsCollectLocal   = sensors.CollectLocal
-	sensorsParse          = sensors.Parse
-	mdadmCollectArrays    = mdadm.CollectArrays
-	cephCollect           = ceph.Collect
-	nowUTC                = func() time.Time { return time.Now().UTC() }
+	hostInfoWithContext    = gohost.InfoWithContext
+	hostUptimeWithContext  = gohost.UptimeWithContext
+	hostmetricsCollect     = hostmetrics.Collect
+	sensorsCollectLocal    = sensors.CollectLocal
+	sensorsParse           = sensors.Parse
+	sensorsCollectPower    = sensors.CollectPower
+	mdadmCollectArrays     = mdadm.CollectArrays
+	cephCollect            = ceph.Collect
+	smartctlCollectLocal   = smartctl.CollectLocal
+	nowUTC                 = func() time.Time { return time.Now().UTC() }
 )
 
 // New constructs a fully initialised host Agent.
@@ -338,13 +344,19 @@ func (a *Agent) buildReport(ctx context.Context) (agentshost.Report, error) {
 	defer cancel()
 
 	uptime, _ := hostUptimeWithContext(collectCtx)
-	snapshot, err := hostmetricsCollect(collectCtx)
+	snapshot, err := hostmetricsCollect(collectCtx, a.cfg.DiskExclude)
 	if err != nil {
 		return agentshost.Report{}, fmt.Errorf("collect metrics: %w", err)
 	}
 
 	// Collect temperature data (best effort - don't fail if unavailable)
 	sensorData := a.collectTemperatures(collectCtx)
+
+	// Collect S.M.A.R.T. disk data (best effort - don't fail if unavailable)
+	smartData := a.collectSMARTData(collectCtx)
+	if len(smartData) > 0 {
+		sensorData.SMART = smartData
+	}
 
 	// Collect RAID array data (best effort - don't fail if unavailable)
 	raidData := a.collectRAIDArrays(collectCtx)
@@ -360,6 +372,7 @@ func (a *Agent) buildReport(ctx context.Context) (agentshost.Report, error) {
 			IntervalSeconds: int(a.interval / time.Second),
 			Hostname:        a.hostname,
 			UpdatedFrom:     a.updatedFrom,
+			CommandsEnabled: a.cfg.EnableCommands,
 		},
 		Host: agentshost.HostInfo{
 			ID:            a.machineID,
@@ -420,7 +433,53 @@ func (a *Agent) sendReport(ctx context.Context, report agentshost.Report) error 
 		return fmt.Errorf("pulse responded with status %s", resp.Status)
 	}
 
+	// Parse response to check for server-side config overrides
+	var reportResp struct {
+		Success bool `json:"success"`
+		HostID  string `json:"hostId"`
+		Config  *struct {
+			CommandsEnabled *bool `json:"commandsEnabled"`
+		} `json:"config,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reportResp); err != nil {
+		// Non-fatal: just log and continue
+		a.logger.Debug().Err(err).Msg("Failed to parse report response, ignoring config")
+		return nil
+	}
+
+	// Apply server config overrides
+	if reportResp.Config != nil && reportResp.Config.CommandsEnabled != nil {
+		a.applyRemoteConfig(*reportResp.Config.CommandsEnabled)
+	}
+
 	return nil
+}
+
+// applyRemoteConfig applies server-side configuration overrides.
+// Currently handles enabling/disabling the command execution feature dynamically.
+func (a *Agent) applyRemoteConfig(commandsEnabled bool) {
+	// Check if state would change
+	currentlyEnabled := a.commandClient != nil
+
+	if commandsEnabled && !currentlyEnabled {
+		// Server enabled commands, but we don't have a command client
+		// Start the command client
+		a.logger.Info().Msg("Server enabled command execution - starting command client")
+		a.commandClient = NewCommandClient(a.cfg, a.agentID, a.hostname, a.platform, a.agentVersion)
+		go func() {
+			if err := a.commandClient.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+				a.logger.Error().Err(err).Msg("Command client stopped with error")
+			}
+		}()
+	} else if !commandsEnabled && currentlyEnabled {
+		// Server disabled commands, but we have a command client running
+		a.logger.Info().Msg("Server disabled command execution - stopping command client")
+		// Properly close the WebSocket connection to stop the client
+		if err := a.commandClient.Close(); err != nil {
+			a.logger.Debug().Err(err).Msg("Error closing command client connection")
+		}
+		a.commandClient = nil
+	}
 }
 
 func normalisePlatform(platform string) string {
@@ -487,9 +546,46 @@ func (a *Agent) collectTemperatures(ctx context.Context) agentshost.Sensors {
 		result.TemperatureCelsius[gpuName] = temp
 	}
 
+	// Add fan speeds (RPM)
+	if len(tempData.Fans) > 0 {
+		result.FanRPM = make(map[string]float64)
+		for fanName, rpm := range tempData.Fans {
+			result.FanRPM[fanName] = rpm
+		}
+	}
+
+	// Add other temperatures (DDR5, motherboard, etc.)
+	if len(tempData.Other) > 0 {
+		result.Additional = make(map[string]float64)
+		for sensorName, temp := range tempData.Other {
+			result.Additional[sensorName] = temp
+		}
+	}
+
+	// Collect power consumption data (Intel RAPL, etc.)
+	if powerData, err := sensorsCollectPower(ctx); err == nil && powerData.Available {
+		result.PowerWatts = make(map[string]float64)
+		if powerData.PackageWatts > 0 {
+			result.PowerWatts["cpu_package"] = powerData.PackageWatts
+		}
+		if powerData.CoreWatts > 0 {
+			result.PowerWatts["cpu_core"] = powerData.CoreWatts
+		}
+		if powerData.DRAMWatts > 0 {
+			result.PowerWatts["dram"] = powerData.DRAMWatts
+		}
+		a.logger.Debug().
+			Float64("packageWatts", powerData.PackageWatts).
+			Str("source", powerData.Source).
+			Msg("Collected power data")
+	}
+
 	a.logger.Debug().
 		Int("temperatureCount", len(result.TemperatureCelsius)).
-		Msg("Collected temperature data")
+		Int("fanCount", len(result.FanRPM)).
+		Int("powerCount", len(result.PowerWatts)).
+		Int("additionalCount", len(result.Additional)).
+		Msg("Collected sensor data")
 
 	return result
 }
@@ -635,7 +731,48 @@ func (a *Agent) collectCephStatus(ctx context.Context) *agentshost.CephCluster {
 	return result
 }
 
+// collectSMARTData collects S.M.A.R.T. data from local disks.
+// Returns nil if smartctl is not available or no disks are found.
+func (a *Agent) collectSMARTData(ctx context.Context) []agentshost.DiskSMART {
+	// Only collect on Linux (smartctl works on other platforms but disk paths differ)
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	smartData, err := smartctlCollectLocal(ctx)
+	if err != nil {
+		a.logger.Debug().Err(err).Msg("Failed to collect S.M.A.R.T. data (smartctl may not be installed)")
+		return nil
+	}
+
+	if len(smartData) == 0 {
+		return nil
+	}
+
+	// Convert internal smartctl types to agent report types
+	result := make([]agentshost.DiskSMART, 0, len(smartData))
+	for _, disk := range smartData {
+		result = append(result, agentshost.DiskSMART{
+			Device:      disk.Device,
+			Model:       disk.Model,
+			Serial:      disk.Serial,
+			WWN:         disk.WWN,
+			Type:        disk.Type,
+			Temperature: disk.Temperature,
+			Health:      disk.Health,
+			Standby:     disk.Standby,
+		})
+	}
+
+	a.logger.Debug().
+		Int("diskCount", len(result)).
+		Msg("Collected S.M.A.R.T. disk data")
+
+	return result
+}
+
 // runProxmoxSetup performs one-time Proxmox API token setup and node registration.
+// Supports hosts with multiple Proxmox products (e.g., PVE + PBS on same host).
 func (a *Agent) runProxmoxSetup(ctx context.Context) {
 	a.logger.Info().Msg("Proxmox mode enabled, checking setup...")
 
@@ -649,28 +786,33 @@ func (a *Agent) runProxmoxSetup(ctx context.Context) {
 		a.cfg.InsecureSkipVerify,
 	)
 
-	result, err := setup.Run(ctx)
+	// Use RunAll to detect and register all Proxmox products on this host
+	results, err := setup.RunAll(ctx)
 	if err != nil {
 		a.logger.Error().Err(err).Msg("Proxmox setup failed")
 		return
 	}
 
-	if result == nil {
-		// Already registered
+	if len(results) == 0 {
+		// All types already registered
+		a.logger.Info().Msg("All detected Proxmox products already registered")
 		return
 	}
 
-	if result.Registered {
-		a.logger.Info().
-			Str("type", result.ProxmoxType).
-			Str("host", result.NodeHost).
-			Str("token_id", result.TokenID).
-			Msg("Proxmox node registered successfully")
-	} else {
-		a.logger.Warn().
-			Str("type", result.ProxmoxType).
-			Str("host", result.NodeHost).
-			Msg("Proxmox token created but registration failed (node may need manual configuration)")
+	// Log results for each registered type
+	for _, result := range results {
+		if result.Registered {
+			a.logger.Info().
+				Str("type", result.ProxmoxType).
+				Str("host", result.NodeHost).
+				Str("token_id", result.TokenID).
+				Msg("Proxmox node registered successfully")
+		} else {
+			a.logger.Warn().
+				Str("type", result.ProxmoxType).
+				Str("host", result.NodeHost).
+				Msg("Proxmox token created but registration failed (node may need manual configuration)")
+		}
 	}
 }
 

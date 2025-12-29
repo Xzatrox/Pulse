@@ -181,6 +181,7 @@ type Host struct {
 	IntervalSeconds   int                    `json:"intervalSeconds,omitempty"`
 	LastSeen          time.Time              `json:"lastSeen"`
 	AgentVersion      string                 `json:"agentVersion,omitempty"`
+	CommandsEnabled   bool                   `json:"commandsEnabled,omitempty"` // Whether AI command execution is enabled
 	TokenID           string                 `json:"tokenId,omitempty"`
 	TokenName         string                 `json:"tokenName,omitempty"`
 	TokenHint         string                 `json:"tokenHint,omitempty"`
@@ -209,6 +210,19 @@ type HostSensorSummary struct {
 	TemperatureCelsius map[string]float64 `json:"temperatureCelsius,omitempty"`
 	FanRPM             map[string]float64 `json:"fanRpm,omitempty"`
 	Additional         map[string]float64 `json:"additional,omitempty"`
+	SMART              []HostDiskSMART    `json:"smart,omitempty"` // S.M.A.R.T. disk data
+}
+
+// HostDiskSMART represents S.M.A.R.T. data for a disk from a host agent.
+type HostDiskSMART struct {
+	Device      string `json:"device"`            // Device name (e.g., sda)
+	Model       string `json:"model,omitempty"`   // Disk model
+	Serial      string `json:"serial,omitempty"`  // Serial number
+	WWN         string `json:"wwn,omitempty"`     // World Wide Name
+	Type        string `json:"type,omitempty"`    // Transport type: sata, sas, nvme
+	Temperature int    `json:"temperature"`       // Temperature in Celsius
+	Health      string `json:"health,omitempty"`  // PASSED, FAILED, UNKNOWN
+	Standby     bool   `json:"standby,omitempty"` // True if disk was in standby
 }
 
 // HostRAIDArray represents an mdadm RAID array on a host.
@@ -1282,9 +1296,12 @@ func (s *State) UpdateNodesForInstance(instanceName string, nodes []Node) {
 	}
 
 	// Build hostname-to-hostAgentID map for linking new nodes to existing host agents
+	// Also build a set of valid host agent IDs to validate existing links
 	hostAgentByHostname := make(map[string]string) // lowercase hostname -> hostAgentID
+	validHostAgentIDs := make(map[string]bool)     // set of existing host agent IDs
 	for _, host := range s.Hosts {
 		if host.ID != "" {
+			validHostAgentIDs[host.ID] = true
 			hostAgentByHostname[strings.ToLower(host.Hostname)] = host.ID
 			// Also index by short hostname
 			if idx := strings.Index(host.Hostname, "."); idx > 0 {
@@ -1295,9 +1312,12 @@ func (s *State) UpdateNodesForInstance(instanceName string, nodes []Node) {
 
 	// Add or update nodes from this instance
 	for _, node := range nodes {
-		// Preserve existing link if we had one
+		// Preserve existing link if we had one, but only if the host agent still exists
 		if existingLink, ok := existingNodeLinks[node.ID]; ok {
-			node.LinkedHostAgentID = existingLink
+			if validHostAgentIDs[existingLink] {
+				node.LinkedHostAgentID = existingLink
+			}
+			// If host agent no longer exists, leave LinkedHostAgentID empty (stale reference cleared)
 		}
 		// If no existing link, try to match by hostname
 		if node.LinkedHostAgentID == "" {
@@ -2013,6 +2033,63 @@ func (s *State) LinkNodeToHostAgent(nodeID, hostAgentID string) bool {
 		}
 	}
 	return false
+}
+
+// UnlinkNodesFromHostAgent clears LinkedHostAgentID from all nodes linked to the given host agent.
+// This is called when a host agent is removed to clean up stale references.
+func (s *State) UnlinkNodesFromHostAgent(hostAgentID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for i, node := range s.Nodes {
+		if node.LinkedHostAgentID == hostAgentID {
+			s.Nodes[i].LinkedHostAgentID = ""
+			count++
+		}
+	}
+	if count > 0 {
+		s.LastUpdate = time.Now()
+	}
+	return count
+}
+
+// UnlinkHostAgent removes the bidirectional link between a host agent and its PVE node.
+// Clears LinkedNodeID on the host and LinkedHostAgentID on the node.
+// Returns true if the host was found and unlinked.
+func (s *State) UnlinkHostAgent(hostID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find the host
+	var hostIdx int = -1
+	var linkedNodeID string
+	for i, host := range s.Hosts {
+		if host.ID == hostID {
+			hostIdx = i
+			linkedNodeID = host.LinkedNodeID
+			break
+		}
+	}
+
+	if hostIdx < 0 || linkedNodeID == "" {
+		return false
+	}
+
+	// Clear the link on the host
+	s.Hosts[hostIdx].LinkedNodeID = ""
+	s.Hosts[hostIdx].LinkedVMID = ""
+	s.Hosts[hostIdx].LinkedContainerID = ""
+
+	// Clear the link on the node
+	for i, node := range s.Nodes {
+		if node.ID == linkedNodeID || node.LinkedHostAgentID == hostID {
+			s.Nodes[i].LinkedHostAgentID = ""
+		}
+	}
+
+	s.LastUpdate = time.Now()
+	return true
 }
 
 // UpsertCephCluster inserts or updates a Ceph cluster in the state.

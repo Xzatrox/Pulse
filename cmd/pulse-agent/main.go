@@ -136,6 +136,7 @@ func main() {
 			EnableProxmox:      cfg.EnableProxmox,
 			ProxmoxType:        cfg.ProxmoxType,
 			EnableCommands:     cfg.EnableCommands,
+			DiskExclude:        cfg.DiskExclude,
 		}
 
 		agent, err := hostagent.New(hostCfg)
@@ -375,6 +376,9 @@ type Config struct {
 	// Security
 	EnableCommands  bool // Enable command execution for AI auto-fix (disabled by default)
 
+	// Disk filtering
+	DiskExclude []string // Mount points or patterns to exclude from disk monitoring
+
 	// Health/metrics server
 	HealthAddr string
 
@@ -415,6 +419,7 @@ func loadConfig() Config {
 	envKubeIncludeAllPods := utils.GetenvTrim("PULSE_KUBE_INCLUDE_ALL_PODS")
 	envKubeIncludeAllDeployments := utils.GetenvTrim("PULSE_KUBE_INCLUDE_ALL_DEPLOYMENTS")
 	envKubeMaxPods := utils.GetenvTrim("PULSE_KUBE_MAX_PODS")
+	envDiskExclude := utils.GetenvTrim("PULSE_DISK_EXCLUDE")
 
 	// Defaults
 	defaultInterval := 30 * time.Second
@@ -486,6 +491,8 @@ func loadConfig() Config {
 	flag.Var(&kubeIncludeNamespaceFlags, "kube-include-namespace", "Namespace to include (repeatable; default is all)")
 	var kubeExcludeNamespaceFlags multiValue
 	flag.Var(&kubeExcludeNamespaceFlags, "kube-exclude-namespace", "Namespace to exclude (repeatable)")
+	var diskExcludeFlags multiValue
+	flag.Var(&diskExcludeFlags, "disk-exclude", "Mount point or path prefix to exclude from disk monitoring (repeatable)")
 
 	flag.Parse()
 
@@ -514,6 +521,7 @@ func loadConfig() Config {
 	tags := gatherTags(envTags, tagFlags)
 	kubeIncludeNamespaces := gatherCSV(envKubeIncludeNamespaces, kubeIncludeNamespaceFlags)
 	kubeExcludeNamespaces := gatherCSV(envKubeExcludeNamespaces, kubeExcludeNamespaceFlags)
+	diskExclude := gatherCSV(envDiskExclude, diskExcludeFlags)
 
 	// Check if Docker was explicitly configured via flag or env
 	dockerConfigured := envEnableDocker != ""
@@ -551,6 +559,7 @@ func loadConfig() Config {
 		KubeIncludeAllPods:        *kubeIncludeAllPodsFlag,
 		KubeIncludeAllDeployments: *kubeIncludeAllDeploymentsFlag,
 		KubeMaxPods:               *kubeMaxPodsFlag,
+		DiskExclude:               diskExclude,
 	}
 }
 

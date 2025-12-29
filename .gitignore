@@ -103,8 +103,7 @@ testing-tools/*
 manual-test*.md
 verify-*.md
 test-*.md
-package.json
-package-lock.json
+
 *.test.js
 *.test.md
 screenshots/
@@ -177,4 +176,5 @@ landing-page/
 # Local Gemini config
 .gemini/
 deployment/
-q-dev-chat-2025-12-26.md
+q-dev*.md
+*.code-workspace

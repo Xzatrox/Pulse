@@ -11,7 +11,7 @@ import { HostsFilter } from './HostsFilter';
 import { useWebSocket } from '@/App';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { getHostStatusIndicator } from '@/utils/status';
-import { MetricText } from '@/components/shared/responsive';
+
 import { StackedMemoryBar } from '@/components/Dashboard/StackedMemoryBar';
 import { EnhancedCPUBar } from '@/components/Dashboard/EnhancedCPUBar';
 import { useBreakpoint, type ColumnPriority } from '@/hooks/useBreakpoint';
@@ -35,28 +35,23 @@ export interface HostColumnDef {
   sortKey?: string;
 }
 
-// Host table column definitions
+// Host table column definitions - all essential for horizontal scroll like Docker
 export const HOST_COLUMNS: HostColumnDef[] = [
-  // Essential - always visible
-  { id: 'name', label: 'Host', priority: 'essential', width: '140px', sortKey: 'name' },
-  { id: 'platform', label: 'Platform', priority: 'essential', width: '90px', sortKey: 'platform' },
-  { id: 'cpu', label: 'CPU', priority: 'essential', width: '140px', sortKey: 'cpu' },
-  { id: 'memory', label: 'Memory', priority: 'essential', width: '140px', sortKey: 'memory' },
-  { id: 'disk', label: 'Disk', priority: 'essential', width: '140px', sortKey: 'disk' },
+  // Core columns - all essential (visible on all screens with horizontal scroll)
+  { id: 'name', label: 'Host', priority: 'essential', width: '100px', sortKey: 'name' },
+  { id: 'platform', label: 'Platform', priority: 'essential', width: '70px', sortKey: 'platform' },
+  { id: 'cpu', label: 'CPU', priority: 'essential', width: '60px', sortKey: 'cpu' },
+  { id: 'memory', label: 'Memory', priority: 'essential', width: '60px', sortKey: 'memory' },
+  { id: 'disk', label: 'Disk', priority: 'essential', width: '60px', sortKey: 'disk' },
 
-  // Secondary - visible on md+, toggleable
-  { id: 'temp', label: 'Temp', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>, priority: 'secondary', width: '50px', toggleable: true },
-  { id: 'uptime', label: 'Uptime', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>, priority: 'secondary', width: '65px', toggleable: true, sortKey: 'uptime' },
-  { id: 'agent', label: 'Agent', priority: 'secondary', width: '60px', toggleable: true },
-
-  // Supplementary - visible on lg+, toggleable
-  // Note: CPU count and load average removed - they're shown in the EnhancedCPUBar tooltip
-  { id: 'ip', label: 'IP', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>, priority: 'supplementary', width: '50px', toggleable: true },
-
-  // Detailed - visible on xl+, toggleable
-  { id: 'arch', label: 'Arch', priority: 'detailed', width: '55px', toggleable: true },
-  { id: 'kernel', label: 'Kernel', priority: 'detailed', width: '120px', toggleable: true },
-  { id: 'raid', label: 'RAID', priority: 'detailed', width: '60px', toggleable: true },
+  // Additional columns - essential but toggleable by user
+  { id: 'temp', label: 'Temp', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>, priority: 'essential', width: '50px', toggleable: true },
+  { id: 'uptime', label: 'Uptime', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>, priority: 'essential', width: '55px', toggleable: true, sortKey: 'uptime' },
+  { id: 'agent', label: 'Agent', priority: 'essential', width: '55px', toggleable: true },
+  { id: 'ip', label: 'IP', icon: <svg class="w-3.5 h-3.5 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>, priority: 'essential', width: '45px', toggleable: true },
+  { id: 'arch', label: 'Arch', priority: 'essential', width: '50px', toggleable: true },
+  { id: 'kernel', label: 'Kernel', priority: 'essential', width: '80px', toggleable: true },
+  { id: 'raid', label: 'RAID', priority: 'essential', width: '55px', toggleable: true },
 ];
 
 // Network info cell with rich tooltip showing interfaces, IPs, and traffic (matches GuestRow pattern)
@@ -157,27 +152,40 @@ function HostNetworkInfoCell(props: { networkInterfaces: NetworkInterface[] }) {
 }
 
 // Temperature cell with rich tooltip showing all sensor readings
-function HostTemperatureCell(props: { sensors: Record<string, number> | null | undefined }) {
+interface HostSensorSummaryForCell {
+  temperatureCelsius?: Record<string, number>;
+  fanRpm?: Record<string, number>;
+  additional?: Record<string, number>;
+}
+
+function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null | undefined }) {
   const [showTooltip, setShowTooltip] = createSignal(false);
   const [tooltipPos, setTooltipPos] = createSignal({ x: 0, y: 0 });
 
   // Get the primary (highest) temperature for display
   const primaryTemp = createMemo(() => {
-    if (!props.sensors) return null;
-    const temps = Object.values(props.sensors);
+    if (!props.sensors?.temperatureCelsius) return null;
+    const temps = Object.values(props.sensors.temperatureCelsius);
     if (temps.length === 0) return null;
     // Find package/composite temp first, otherwise show max
-    const keys = Object.keys(props.sensors);
+    const keys = Object.keys(props.sensors.temperatureCelsius);
     const packageKey = keys.find(k =>
       k.toLowerCase().includes('package') ||
       k.toLowerCase().includes('composite') ||
       k.toLowerCase().includes('tctl')
     );
-    if (packageKey) return props.sensors[packageKey];
+    if (packageKey) return props.sensors.temperatureCelsius[packageKey];
     return Math.max(...temps);
   });
 
-  const hasSensors = () => props.sensors && Object.keys(props.sensors).length > 0;
+  const hasSensors = () => {
+    const temps = props.sensors?.temperatureCelsius;
+    const fans = props.sensors?.fanRpm;
+    const additional = props.sensors?.additional;
+    return (temps && Object.keys(temps).length > 0) ||
+      (fans && Object.keys(fans).length > 0) ||
+      (additional && Object.keys(additional).length > 0);
+  };
 
   // Color based on temperature
   const textColorClass = createMemo(() => {
@@ -199,9 +207,9 @@ function HostTemperatureCell(props: { sensors: Record<string, number> | null | u
   };
 
   // Sort sensors: package/composite first, then cores, then others
-  const sortedSensors = createMemo(() => {
-    if (!props.sensors) return [];
-    return Object.entries(props.sensors).sort(([a], [b]) => {
+  const sortedTemps = createMemo(() => {
+    if (!props.sensors?.temperatureCelsius) return [];
+    return Object.entries(props.sensors.temperatureCelsius).sort(([a], [b]) => {
       const aLower = a.toLowerCase();
       const bLower = b.toLowerCase();
       // Package/composite/tctl first
@@ -218,6 +226,26 @@ function HostTemperatureCell(props: { sensors: Record<string, number> | null | u
       return a.localeCompare(b);
     });
   });
+
+  const sortedFans = createMemo(() => {
+    if (!props.sensors?.fanRpm) return [];
+    return Object.entries(props.sensors.fanRpm).sort(([a], [b]) => a.localeCompare(b));
+  });
+
+  const sortedAdditional = createMemo(() => {
+    if (!props.sensors?.additional) return [];
+    return Object.entries(props.sensors.additional).sort(([a], [b]) => a.localeCompare(b));
+  });
+
+  // Format sensor name for display (e.g., "nct6687_cpu_fan" -> "CPU Fan")
+  const formatSensorName = (name: string) => {
+    // Remove chip prefix (e.g., "nct6687_" or "coretemp_")
+    let clean = name.replace(/^[a-z]+\d*_/i, '');
+    // Replace underscores with spaces
+    clean = clean.replace(/_/g, ' ');
+    // Capitalize words
+    return clean.replace(/\b\w/g, c => c.toUpperCase());
+  };
 
   return (
     <>
@@ -241,24 +269,63 @@ function HostTemperatureCell(props: { sensors: Record<string, number> | null | u
               transform: 'translate(-50%, -100%)',
             }}
           >
-            <div class="bg-gray-900 dark:bg-gray-800 text-white text-[10px] rounded-md shadow-lg px-2 py-1.5 min-w-[160px] max-w-[240px] border border-gray-700">
-              <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
-                Temperature Sensors
-              </div>
+            <div class="bg-gray-900 dark:bg-gray-800 text-white text-[10px] rounded-md shadow-lg px-2 py-1.5 min-w-[160px] max-w-[280px] border border-gray-700">
+              {/* Temperature section */}
+              <Show when={sortedTemps().length > 0}>
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                  Temperatures
+                </div>
+                <div class="space-y-0.5 mb-2">
+                  <For each={sortedTemps()}>
+                    {([name, temp]) => {
+                      const colorClass = temp >= 80 ? 'text-red-400' : temp >= 70 ? 'text-yellow-400' : 'text-gray-200';
+                      return (
+                        <div class="flex justify-between gap-3 py-0.5">
+                          <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
+                          <span class={`font-medium font-mono ${colorClass}`}>{Math.round(temp)}°C</span>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
 
-              <div class="space-y-0.5">
-                <For each={sortedSensors()}>
-                  {([name, temp]) => {
-                    const colorClass = temp >= 80 ? 'text-red-400' : temp >= 70 ? 'text-yellow-400' : 'text-gray-200';
-                    return (
+              {/* Fan speeds section */}
+              <Show when={sortedFans().length > 0}>
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                  Fan Speeds
+                </div>
+                <div class="space-y-0.5 mb-2">
+                  <For each={sortedFans()}>
+                    {([name, rpm]) => (
                       <div class="flex justify-between gap-3 py-0.5">
-                        <span class="text-gray-400 truncate max-w-[120px]">{name}</span>
-                        <span class={`font-medium font-mono ${colorClass}`}>{Math.round(temp)}°C</span>
+                        <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
+                        <span class="font-medium font-mono text-blue-300">{Math.round(rpm)} RPM</span>
                       </div>
-                    );
-                  }}
-                </For>
-              </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+
+              {/* Additional sensors section */}
+              <Show when={sortedAdditional().length > 0}>
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                  Other Sensors
+                </div>
+                <div class="space-y-0.5">
+                  <For each={sortedAdditional()}>
+                    {([name, temp]) => {
+                      const colorClass = temp >= 80 ? 'text-red-400' : temp >= 70 ? 'text-yellow-400' : 'text-gray-200';
+                      return (
+                        <div class="flex justify-between gap-3 py-0.5">
+                          <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
+                          <span class={`font-medium font-mono ${colorClass}`}>{Math.round(temp)}°C</span>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
             </div>
           </div>
         </Portal>
@@ -676,7 +743,7 @@ export const HostsOverview: Component = () => {
 
 
 
-  const thClass = "px-2 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap";
+  const thClass = "px-1.5 py-1 text-center text-[11px] sm:text-xs font-medium uppercase tracking-wider cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 whitespace-nowrap";
 
   return (
     <div class="space-y-4">
@@ -787,8 +854,9 @@ export const HostsOverview: Component = () => {
                 }
               >
                 <Card padding="none" tone="glass" class="overflow-hidden">
-                  <div class="overflow-x-auto">
-                    <table class="w-full border-collapse whitespace-nowrap">
+                  <div class="overflow-x-auto" style="scrollbar-width: none; -ms-overflow-style: none;">
+                    <style>{`.overflow-x-auto::-webkit-scrollbar { display: none; }`}</style>
+                    <table class="w-full border-collapse whitespace-nowrap" style={{ "min-width": "800px" }}>
                       <thead>
                         <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
                           {/* Essential columns */}
@@ -801,17 +869,17 @@ export const HostsOverview: Component = () => {
                             </th>
                           </Show>
                           <Show when={isColVisible('cpu')}>
-                            <th class={thClass} onClick={() => handleSort('cpu')}>
+                            <th class={thClass} style={{ "min-width": isMobile() ? "60px" : "140px" }} onClick={() => handleSort('cpu')}>
                               CPU {renderSortIndicator('cpu')}
                             </th>
                           </Show>
                           <Show when={isColVisible('memory')}>
-                            <th class={thClass} onClick={() => handleSort('memory')}>
+                            <th class={thClass} style={{ "min-width": isMobile() ? "60px" : "140px" }} onClick={() => handleSort('memory')}>
                               Memory {renderSortIndicator('memory')}
                             </th>
                           </Show>
                           <Show when={isColVisible('disk')}>
-                            <th class={thClass} onClick={() => handleSort('disk')}>
+                            <th class={thClass} style={{ "min-width": isMobile() ? "60px" : "140px" }} onClick={() => handleSort('disk')}>
                               Disk {renderSortIndicator('disk')}
                             </th>
                           </Show>
@@ -992,7 +1060,6 @@ const HostRow: Component<HostRowProps> = (props) => {
   const hostStatus = createMemo(() => getHostStatusIndicator(host));
   const isOnline = () => host.status === 'online';
   const cpuPercent = host.cpuUsage ?? 0;
-  const memPercent = host.memory?.usage ?? 0;
   const diskStats = props.getDiskStats(host);
 
   const rowClass = () => {
@@ -1096,66 +1163,45 @@ const HostRow: Component<HostRowProps> = (props) => {
 
         {/* CPU */}
         <Show when={props.isColVisible('cpu')}>
-          <td class="px-2 py-1 align-middle" style={{ "min-width": "140px" }}>
+          <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
-              <Show when={props.isMobile()}>
-                <div class="md:hidden flex justify-center">
-                  <MetricText value={cpuPercent} type="cpu" />
-                </div>
-              </Show>
-              <div class="hidden md:block">
-                <EnhancedCPUBar
-                  usage={cpuPercent}
-                  loadAverage={host.loadAverage?.[0]}
-                  cores={host.cpuCount}
-                />
-              </div>
+              <EnhancedCPUBar
+                usage={cpuPercent}
+                loadAverage={host.loadAverage?.[0]}
+                cores={props.isMobile() ? undefined : host.cpuCount}
+              />
             </Show>
           </td>
         </Show>
 
         {/* Memory */}
         <Show when={props.isColVisible('memory')}>
-          <td class="px-2 py-1 align-middle" style={{ "min-width": "140px" }}>
+          <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
-              <Show when={props.isMobile()}>
-                <div class="md:hidden flex justify-center">
-                  <MetricText value={memPercent} type="memory" />
-                </div>
-              </Show>
-              <div class="hidden md:block">
-                <StackedMemoryBar
-                  used={host.memory?.used || 0}
-                  total={host.memory?.total || 0}
-                  balloon={host.memory?.balloon || 0}
-                  swapUsed={host.memory?.swapUsed || 0}
-                  swapTotal={host.memory?.swapTotal || 0}
-                />
-              </div>
+              <StackedMemoryBar
+                used={host.memory?.used || 0}
+                total={host.memory?.total || 0}
+                balloon={host.memory?.balloon || 0}
+                swapUsed={host.memory?.swapUsed || 0}
+                swapTotal={host.memory?.swapTotal || 0}
+              />
             </Show>
           </td>
         </Show>
 
         {/* Disk */}
         <Show when={props.isColVisible('disk')}>
-          <td class="px-2 py-1 align-middle" style={{ "min-width": "140px" }}>
+          <td class="px-2 py-1 align-middle" style={{ "min-width": props.isMobile() ? "60px" : "140px", "width": props.isMobile() ? undefined : "140px", "max-width": props.isMobile() ? undefined : "140px" }}>
             <Show when={isOnline()} fallback={<div class="flex justify-center"><span class="text-xs text-gray-400">—</span></div>}>
-              <Show when={props.isMobile()}>
-                <div class="md:hidden flex justify-center">
-                  <MetricText value={diskStats.percent} type="disk" />
-                </div>
-              </Show>
-              <div class="hidden md:block">
-                <StackedDiskBar
-                  disks={host.disks}
-                  aggregateDisk={{
-                    total: diskStats.total,
-                    used: diskStats.used,
-                    free: diskStats.total - diskStats.used,
-                    usage: diskStats.percent / 100
-                  }}
-                />
-              </div>
+              <StackedDiskBar
+                disks={host.disks}
+                aggregateDisk={{
+                  total: diskStats.total,
+                  used: diskStats.used,
+                  free: diskStats.total - diskStats.used,
+                  usage: diskStats.percent / 100
+                }}
+              />
             </Show>
           </td>
         </Show>
@@ -1164,7 +1210,7 @@ const HostRow: Component<HostRowProps> = (props) => {
         <Show when={props.isColVisible('temp')}>
           <td class="px-2 py-1 align-middle">
             <div class="flex justify-center">
-              <HostTemperatureCell sensors={host.sensors?.temperatureCelsius} />
+              <HostTemperatureCell sensors={host.sensors} />
             </div>
           </td>
         </Show>

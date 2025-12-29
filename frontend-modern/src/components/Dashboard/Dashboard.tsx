@@ -20,6 +20,7 @@ import { getNodeDisplayName } from '@/utils/nodes';
 import { logger } from '@/utils/logger';
 import { usePersistentSignal } from '@/hooks/usePersistentSignal';
 import { useColumnVisibility } from '@/hooks/useColumnVisibility';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { STORAGE_KEYS } from '@/utils/localStorage';
 import { getBackupInfo } from '@/utils/format';
 import { aiChatStore } from '@/stores/aiChat';
@@ -199,7 +200,6 @@ interface DashboardProps {
 
 type ViewMode = 'all' | 'vm' | 'lxc';
 type StatusMode = 'all' | 'running' | 'degraded' | 'stopped';
-type BackupMode = 'all' | 'needs-backup';
 type GroupingMode = 'grouped' | 'flat';
 type ProblemsMode = 'all' | 'problems';
 
@@ -207,8 +207,18 @@ export function Dashboard(props: DashboardProps) {
   const navigate = useNavigate();
   const ws = useWebSocket();
   const { connected, activeAlerts, initialDataReceived, reconnecting, reconnect } = ws;
+  const { isMobile } = useBreakpoint();
   const alertsActivation = useAlertsActivation();
   const alertsEnabled = createMemo(() => alertsActivation.activationState() === 'active');
+
+  // Kiosk mode - hide filter panel for clean dashboard display
+  // Usage: Add ?kiosk=1 to URL
+  const kioskMode = createMemo(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('kiosk') === '1' || params.get('kiosk') === 'true';
+  });
+
   const [search, setSearch] = createSignal('');
   const [isSearchLocked, setIsSearchLocked] = createSignal(false);
   const [selectedNode, setSelectedNode] = createSignal<string | null>(null);
@@ -239,11 +249,6 @@ export function Dashboard(props: DashboardProps) {
       raw === 'all' || raw === 'running' || raw === 'degraded' || raw === 'stopped'
         ? (raw as StatusMode)
         : 'all',
-  });
-
-  // Backup filter mode - filter by backup status
-  const [backupMode, setBackupMode] = usePersistentSignal<BackupMode>('dashboardBackupMode', 'all', {
-    deserialize: (raw) => (raw === 'all' || raw === 'needs-backup' ? raw : 'all'),
   });
 
   // Grouping mode - grouped by node or flat list
@@ -574,7 +579,6 @@ export function Dashboard(props: DashboardProps) {
           selectedNode() !== null ||
           viewMode() !== 'all' ||
           statusMode() !== 'all' ||
-          backupMode() !== 'all' ||
           problemsMode() !== 'all';
 
         if (hasActiveFilters) {
@@ -586,7 +590,6 @@ export function Dashboard(props: DashboardProps) {
           setSelectedNode(null);
           setViewMode('all');
           setStatusMode('all');
-          setBackupMode('all');
           setProblemsMode('all');
 
           // Blur the search input if it's focused
@@ -686,18 +689,7 @@ export function Dashboard(props: DashboardProps) {
       guests = guests.filter((g) => g.status !== 'running');
     }
 
-    // Filter by backup status
-    if (backupMode() === 'needs-backup') {
-      guests = guests.filter((g) => {
-        // Skip templates - they don't need backups
-        if (g.template) return false;
-        const backupInfo = getBackupInfo(g.lastBackup, alertsActivation.getBackupThresholds());
-        // Show guests that need backup: stale, critical, or never backed up
-        return backupInfo.status === 'stale' || backupInfo.status === 'critical' || backupInfo.status === 'never';
-      });
-    }
-
-    // Filter by problems mode - show guests that need attention
+    // Filter by problems mode - show guests that need attention (includes backup issues)
     if (problemsMode() === 'problems') {
       guests = guests.filter((g) => {
         // Skip templates
@@ -957,7 +949,10 @@ export function Dashboard(props: DashboardProps) {
 
   return (
     <div class="space-y-3">
-      <ProxmoxSectionNav current="overview" />
+      {/* Section nav - hidden in kiosk mode */}
+      <Show when={!kioskMode()}>
+        <ProxmoxSectionNav current="overview" />
+      </Show>
 
       {/* Unified Node Selector */}
       <UnifiedNodeSelector
@@ -970,30 +965,30 @@ export function Dashboard(props: DashboardProps) {
         searchTerm={search()}
       />
 
-      {/* Dashboard Filter */}
-      <DashboardFilter
-        search={search}
-        setSearch={setSearch}
-        isSearchLocked={isSearchLocked}
-        viewMode={viewMode}
-        setViewMode={setViewMode}
-        statusMode={statusMode}
-        setStatusMode={setStatusMode}
-        backupMode={backupMode}
-        setBackupMode={setBackupMode}
-        problemsMode={problemsMode}
-        setProblemsMode={setProblemsMode}
-        filteredProblemGuests={problemGuests}
-        groupingMode={groupingMode}
-        setGroupingMode={setGroupingMode}
-        setSortKey={setSortKey}
-        setSortDirection={setSortDirection}
-        searchInputRef={(el) => (searchInputRef = el)}
-        availableColumns={columnVisibility.availableToggles()}
-        isColumnHidden={columnVisibility.isHiddenByUser}
-        onColumnToggle={columnVisibility.toggle}
-        onColumnReset={columnVisibility.resetToDefaults}
-      />
+      {/* Dashboard Filter - hidden in kiosk mode */}
+      <Show when={!kioskMode()}>
+        <DashboardFilter
+          search={search}
+          setSearch={setSearch}
+          isSearchLocked={isSearchLocked}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          statusMode={statusMode}
+          setStatusMode={setStatusMode}
+          problemsMode={problemsMode}
+          setProblemsMode={setProblemsMode}
+          filteredProblemGuests={problemGuests}
+          groupingMode={groupingMode}
+          setGroupingMode={setGroupingMode}
+          setSortKey={setSortKey}
+          setSortDirection={setSortDirection}
+          searchInputRef={(el) => (searchInputRef = el)}
+          availableColumns={columnVisibility.availableToggles()}
+          isColumnHidden={columnVisibility.isHiddenByUser}
+          onColumnToggle={columnVisibility.toggle}
+          onColumnReset={columnVisibility.resetToDefaults}
+        />
+      </Show>
 
       {/* Loading State */}
       <Show when={connected() && !initialDataReceived()}>
@@ -1117,7 +1112,7 @@ export function Dashboard(props: DashboardProps) {
         <ComponentErrorBoundary name="Guest Table">
           <Card padding="none" tone="glass" class="mb-4 overflow-hidden">
             <div class="overflow-x-auto">
-              <table class="w-full border-collapse whitespace-nowrap" style={{ "min-width": "900px" }}>
+              <table class="w-full border-collapse whitespace-nowrap" style={{ "min-width": isMobile() ? "800px" : "900px" }}>
                 <thead>
                   <tr class="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
                     <For each={visibleColumns()}>
@@ -1130,10 +1125,14 @@ export function Dashboard(props: DashboardProps) {
                         return (
                           <th
                             class={`py-1 text-[11px] sm:text-xs font-medium uppercase tracking-wider whitespace-nowrap
-                              ${isFirst() ? 'pl-4 pr-2 text-left' : 'px-2 text-center'}
-                              ${isSortable ? 'cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600' : ''}`}
+                                  ${isFirst() ? 'pl-4 pr-2 text-left' : 'px-2 text-center'}
+                                  ${isSortable ? 'cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600' : ''}`}
                             style={{
-                              ...(col.width ? { "min-width": col.width } : {}),
+                              ...((['cpu', 'memory', 'disk'].includes(col.id))
+                                ? (isMobile()
+                                  ? { "min-width": "60px" }
+                                  : { "width": "140px", "min-width": "140px", "max-width": "140px" })
+                                : (col.width && (!isMobile() || col.id !== 'name') ? { "min-width": col.width } : {})),
                               "vertical-align": 'middle'
                             }}
                             onClick={() => isSortable && handleSort(sortKeyForCol!)}

@@ -12,10 +12,19 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// getHostAgentTemperature looks for a matching host agent by hostname and converts
+// getHostAgentTemperature looks for a matching host agent and converts
 // its sensor data to the Temperature model used by Proxmox nodes.
+// It first tries to match by nodeID using the LinkedNodeID field (preferred for
+// duplicate hostname scenarios), then falls back to hostname matching.
 // Returns nil if no matching host agent is found or if no temperature data is available.
 func (m *Monitor) getHostAgentTemperature(nodeName string) *models.Temperature {
+	return m.getHostAgentTemperatureByID("", nodeName)
+}
+
+// getHostAgentTemperatureByID looks for a matching host agent by node ID first,
+// then falls back to hostname matching. This correctly handles clusters where
+// multiple nodes may have the same hostname (e.g., "px1" on different IPs).
+func (m *Monitor) getHostAgentTemperatureByID(nodeID, nodeName string) *models.Temperature {
 	if m.state == nil {
 		return nil
 	}
@@ -25,15 +34,35 @@ func (m *Monitor) getHostAgentTemperature(nodeName string) *models.Temperature {
 		return nil
 	}
 
-	// Find a host agent whose hostname matches the Proxmox node name
-	// The agent on a Proxmox node will have the same hostname as the node
-	nodeLower := strings.ToLower(strings.TrimSpace(nodeName))
 	var matchedHost *models.Host
-	for i := range hosts {
-		hostnameLower := strings.ToLower(strings.TrimSpace(hosts[i].Hostname))
-		if hostnameLower == nodeLower {
-			matchedHost = &hosts[i]
-			break
+
+	// First, try to find a host agent that is explicitly linked to this node
+	// via LinkedNodeID. This is the most reliable method and handles duplicate
+	// hostnames correctly.
+	if nodeID != "" {
+		for i := range hosts {
+			if hosts[i].LinkedNodeID == nodeID {
+				matchedHost = &hosts[i]
+				log.Debug().
+					Str("nodeID", nodeID).
+					Str("hostAgentID", hosts[i].ID).
+					Str("hostname", hosts[i].Hostname).
+					Msg("Matched host agent to node via LinkedNodeID")
+				break
+			}
+		}
+	}
+
+	// Fallback: match by hostname if no linked host was found
+	// This maintains backwards compatibility for setups where linking hasn't occurred yet
+	if matchedHost == nil {
+		nodeLower := strings.ToLower(strings.TrimSpace(nodeName))
+		for i := range hosts {
+			hostnameLower := strings.ToLower(strings.TrimSpace(hosts[i].Hostname))
+			if hostnameLower == nodeLower {
+				matchedHost = &hosts[i]
+				break
+			}
 		}
 	}
 
@@ -179,8 +208,29 @@ func convertHostSensorsToTemperature(sensors models.HostSensorSummary, lastSeen 
 		}
 	}
 
+	// Convert S.M.A.R.T. data from host agent
+	if len(sensors.SMART) > 0 {
+		temp.SMART = make([]models.DiskTemp, 0, len(sensors.SMART))
+		for _, disk := range sensors.SMART {
+			// Skip disks in standby (no temperature data)
+			if disk.Standby {
+				continue
+			}
+			temp.SMART = append(temp.SMART, models.DiskTemp{
+				Device:      "/dev/" + disk.Device,
+				Serial:      disk.Serial,
+				WWN:         disk.WWN,
+				Model:       disk.Model,
+				Type:        disk.Type,
+				Temperature: disk.Temperature,
+				LastUpdated: lastSeen,
+			})
+		}
+		temp.HasSMART = len(temp.SMART) > 0
+	}
+
 	// Validate we have at least some data
-	if !temp.HasCPU && !temp.HasGPU && !temp.HasNVMe {
+	if !temp.HasCPU && !temp.HasGPU && !temp.HasNVMe && !temp.HasSMART {
 		return nil
 	}
 
@@ -191,6 +241,7 @@ func convertHostSensorsToTemperature(sensors models.HostSensorSummary, lastSeen 
 		Int("coreCount", len(temp.Cores)).
 		Int("nvmeCount", len(temp.NVMe)).
 		Int("gpuCount", len(temp.GPU)).
+		Int("smartCount", len(temp.SMART)).
 		Msg("Converted host agent sensors to temperature data")
 
 	return temp
@@ -229,7 +280,7 @@ func mergeTemperatureData(hostAgentTemp, proxyTemp *models.Temperature) *models.
 		HasCPU:      hostAgentTemp.HasCPU,
 		HasGPU:      hostAgentTemp.HasGPU,
 		HasNVMe:     hostAgentTemp.HasNVMe,
-		HasSMART:    proxyTemp.HasSMART, // SMART data only comes from proxy
+		HasSMART:    hostAgentTemp.HasSMART || proxyTemp.HasSMART,
 		LastUpdate:  hostAgentTemp.LastUpdate,
 	}
 
@@ -241,8 +292,10 @@ func mergeTemperatureData(hostAgentTemp, proxyTemp *models.Temperature) *models.
 		result.HasCPU = true
 	}
 
-	// Keep proxy SMART data (host agent doesn't have smartctl access currently)
-	if proxyTemp.HasSMART {
+	// Merge SMART data - prefer host agent if available, fall back to proxy
+	if hostAgentTemp.HasSMART {
+		result.SMART = hostAgentTemp.SMART
+	} else if proxyTemp.HasSMART {
 		result.SMART = proxyTemp.SMART
 	}
 
