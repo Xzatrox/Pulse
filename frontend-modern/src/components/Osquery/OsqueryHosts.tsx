@@ -117,7 +117,7 @@ const OsqueryHosts = () => {
         fallback={<div class="p-8 text-center text-gray-500 dark:text-gray-400">No osquery agents reporting</div>}
       >
         <div class="p-6">
-          <h1 class="text-2xl font-bold mb-6 text-gray-800 dark:text-gray-200">osquery Monitoring</h1>
+          <h1 class="text-2xl font-bold mb-6 text-gray-800 dark:text-gray-200">Services Monitoring</h1>
           
           {/* Agents */}
           <Card padding="none" tone="glass" class="mb-4 overflow-hidden">

@@ -917,7 +917,7 @@ function App() {
       <Route path="/docker" component={DockerRoute} />
       <Route path="/kubernetes" component={KubernetesRoute} />
       <Route path="/hosts" component={HostsRoute} />
-      <Route path="/osquery" component={OsqueryHosts} />
+      <Route path="/services" component={OsqueryHosts} />
       <Route path="/servers" component={() => <Navigate href="/hosts" />} />
       <Route path="/alerts/*" component={AlertsPage} />
       <Route path="/settings/*" component={SettingsRoute} />
@@ -1039,7 +1039,7 @@ function AppLayout(props: {
     if (path.startsWith('/docker')) return 'docker';
     if (path.startsWith('/kubernetes')) return 'kubernetes';
     if (path.startsWith('/hosts')) return 'hosts';
-    if (path.startsWith('/osquery')) return 'osquery';
+    if (path.startsWith('/services')) return 'osquery';
     if (path.startsWith('/servers')) return 'hosts'; // Legacy redirect
     if (path.startsWith('/alerts')) return 'alerts';
     if (path.startsWith('/settings')) return 'settings';
@@ -1135,8 +1135,8 @@ function AppLayout(props: {
       },
       {
         id: 'osquery' as const,
-        label: 'osquery',
-        route: '/osquery',
+        label: 'Services',
+        route: '/services',
         settingsRoute: '/settings',
         tooltip: 'Monitor systems with osquery',
         enabled: true,
