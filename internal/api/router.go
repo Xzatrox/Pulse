@@ -194,6 +194,8 @@ func (r *Router) setupRoutes() {
 	r.kubernetesAgentHandlers = NewKubernetesAgentHandlers(r.monitor, r.wsHub)
 	r.hostAgentHandlers = NewHostAgentHandlers(r.monitor, r.wsHub)
 	osqueryAgentHandlers := NewOsqueryAgentHandlers(r.config.DataPath)
+	// Start osquery cleanup scheduler with 7-day retention
+	osqueryAgentHandlers.StartCleanupScheduler(7)
 	r.temperatureProxyHandlers = NewTemperatureProxyHandlers(r.config, r.persistence, r.reloadFunc)
 	r.resourceHandlers = NewResourceHandlers()
 	r.licenseHandlers = NewLicenseHandlers(r.config.DataPath)
@@ -1317,6 +1319,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/download/pulse-host-agent", r.downloadLimiter.Middleware(r.handleDownloadHostAgent))
 	r.mux.HandleFunc("/download/pulse-host-agent.sha256", r.downloadLimiter.Middleware(r.handleDownloadHostAgent))
 
+	// osquery agent download endpoints (public but rate limited)
+	r.mux.HandleFunc("/download/pulse-osquery-agent", r.downloadLimiter.Middleware(r.handleDownloadOsqueryAgent))
+	r.mux.HandleFunc("/download/pulse-osquery-agent.sha256", r.downloadLimiter.Middleware(r.handleDownloadOsqueryAgentChecksum))
+	r.mux.HandleFunc("/install-osquery-agent.sh", r.downloadLimiter.Middleware(r.handleDownloadOsqueryInstallScript))
+
 	// Unified Agent endpoints (public but rate limited)
 	r.mux.HandleFunc("/install.sh", r.downloadLimiter.Middleware(r.handleDownloadUnifiedInstallScript))
 	r.mux.HandleFunc("/install.ps1", r.downloadLimiter.Middleware(r.handleDownloadUnifiedInstallScriptPS))
@@ -1967,6 +1974,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				"/install.sh",                                        // Unified agent installer
 				"/install.ps1",                                       // Unified agent Windows installer
 				"/download/pulse-agent",                              // Unified agent binary
+				"/download/pulse-osquery-agent",                      // osquery agent binary download
+				"/download/pulse-osquery-agent.sha256",               // osquery agent checksum
+				"/install-osquery-agent.sh",                          // osquery agent installer script
 				"/api/agent/version",                                 // Agent update checks need to work before auth
 				"/api/agent/ws",                                      // Agent WebSocket has its own auth via registration
 				"/api/server/info",                                   // Server info for installer script
@@ -2145,6 +2155,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			req.URL.Path == "/simple-stats" ||
 			req.URL.Path == "/install-docker-agent.sh" ||
 			req.URL.Path == "/install-container-agent.sh" ||
+			req.URL.Path == "/install-osquery-agent.sh" ||
 			path.Clean(req.URL.Path) == "/install-host-agent.sh" ||
 			path.Clean(req.URL.Path) == "/install-host-agent.ps1" ||
 			path.Clean(req.URL.Path) == "/uninstall-host-agent.sh" ||

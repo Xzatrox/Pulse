@@ -8,16 +8,20 @@ import (
 )
 
 type Process struct {
-	PID      string   `json:"pid"`
-	Name     string   `json:"name"`
-	Path     string   `json:"path"`
-	LogFiles []string `json:"log_files,omitempty"`
+	PID         string   `json:"pid"`
+	Name        string   `json:"name"`
+	Path        string   `json:"path"`
+	LogFiles    []string `json:"log_files,omitempty"`
+	LogCommand  string   `json:"log_command,omitempty"`
+	MemoryBytes string   `json:"memory_bytes,omitempty"`
+	Status      string   `json:"status,omitempty"`
 }
 
 type Service struct {
 	Name   string `json:"name"`
 	State  string `json:"state"`
 	Status string `json:"status"`
+	Health string `json:"health,omitempty"`
 }
 
 type OpenFile struct {
@@ -28,18 +32,60 @@ type OpenFile struct {
 var logExtensions = []string{".log", ".txt", ".out", ".err"}
 
 func (a *Agent) collectProcesses() ([]Process, error) {
-	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path FROM processes;")
+	cmd := exec.Command("osqueryi", "--json", "SELECT pid, name, path, resident_size FROM processes;")
 	output, err := cmd.Output()
 	if err != nil {
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to collect process memory, retrying without resident_size")
+		cmd = exec.Command("osqueryi", "--json", "SELECT pid, name, path FROM processes;")
+		output, err = cmd.Output()
+		if err != nil {
+			return nil, err
+		}
+	}
+	
+	var rawProcesses []struct {
+		PID          string `json:"pid"`
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		ResidentSize string `json:"resident_size"`
+	}
+	if err := json.Unmarshal(output, &rawProcesses); err != nil {
 		return nil, err
 	}
 	
-	var processes []Process
-	json.Unmarshal(output, &processes)
+	a.cfg.Logger.Debug().Int("raw_count", len(rawProcesses)).Msg("Parsed process data")
+	if len(rawProcesses) > 0 {
+		a.cfg.Logger.Debug().
+			Str("sample_pid", rawProcesses[0].PID).
+			Str("sample_name", rawProcesses[0].Name).
+			Str("sample_memory", rawProcesses[0].ResidentSize).
+			Msg("Sample process data")
+	}
+	
+	processes := make([]Process, len(rawProcesses))
+	for i, rp := range rawProcesses {
+		processes[i] = Process{
+			PID:         rp.PID,
+			Name:        rp.Name,
+			Path:        rp.Path,
+			MemoryBytes: rp.ResidentSize,
+		}
+	}
 	
 	openFiles, _ := a.collectOpenFiles()
+	serviceNames := a.getServiceNames()
 	for i := range processes {
 		processes[i].LogFiles = filterLogFiles(openFiles[processes[i].PID])
+		// Determine process status
+		processes[i].Status = "running"
+		// If no log files found, suggest journalctl command
+		if len(processes[i].LogFiles) == 0 {
+			if serviceName, ok := serviceNames[processes[i].Name]; ok {
+				processes[i].LogCommand = "journalctl -u " + serviceName + " -f"
+			} else {
+				processes[i].LogCommand = "journalctl _PID=" + processes[i].PID + " -f"
+			}
+		}
 	}
 	
 	return processes, nil
@@ -59,11 +105,17 @@ func (a *Agent) collectOpenFiles() (map[string][]string, error) {
 	cmd := exec.Command("osqueryi", "--json", query)
 	output, err := cmd.Output()
 	if err != nil {
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to collect open files")
 		return nil, err
 	}
 	
 	var files []OpenFile
-	json.Unmarshal(output, &files)
+	if err := json.Unmarshal(output, &files); err != nil {
+		a.cfg.Logger.Warn().Err(err).Msg("Failed to parse open files")
+		return nil, err
+	}
+	
+	a.cfg.Logger.Debug().Int("open_files_count", len(files)).Msg("Collected open files")
 	
 	filesByPID := make(map[string][]string)
 	for _, f := range files {
@@ -76,12 +128,19 @@ func (a *Agent) collectOpenFiles() (map[string][]string, error) {
 func filterLogFiles(files []string) []string {
 	var logs []string
 	for _, file := range files {
+		fileLower := strings.ToLower(file)
+		// Check extensions
 		for _, ext := range logExtensions {
-			if strings.HasSuffix(strings.ToLower(file), ext) {
+			if strings.HasSuffix(fileLower, ext) {
 				logs = append(logs, file)
-				break
+				goto next
 			}
 		}
+		// Check if file is in /var/log/ directory
+		if strings.HasPrefix(file, "/var/log/") {
+			logs = append(logs, file)
+		}
+	next:
 	}
 	return logs
 }
@@ -107,5 +166,32 @@ func (a *Agent) collectServices() ([]Service, error) {
 	
 	var services []Service
 	json.Unmarshal(output, &services)
+	
+	// Set health status based on state
+	for i := range services {
+		if services[i].State == "active" && services[i].Status == "running" {
+			services[i].Health = "healthy"
+		} else if services[i].State == "failed" {
+			services[i].Health = "unhealthy"
+		} else {
+			services[i].Health = "unknown"
+		}
+	}
+	
 	return services, nil
+}
+
+func (a *Agent) getServiceNames() map[string]string {
+	services, err := a.collectServices()
+	if err != nil {
+		return nil
+	}
+	
+	serviceMap := make(map[string]string)
+	for _, svc := range services {
+		// Extract process name from service name (e.g., "pulse.service" -> "pulse")
+		name := strings.TrimSuffix(svc.Name, ".service")
+		serviceMap[name] = svc.Name
+	}
+	return serviceMap
 }

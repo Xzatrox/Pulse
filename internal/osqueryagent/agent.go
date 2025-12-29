@@ -15,6 +15,7 @@ type Config struct {
 	AgentID            string
 	InsecureSkipVerify bool
 	Logger             *zerolog.Logger
+	ExcludePatterns    []string
 }
 
 type Agent struct {
@@ -58,6 +59,10 @@ func (a *Agent) collect() {
 		a.cfg.Logger.Warn().Err(err).Msg("Failed to collect services")
 		return
 	}
+
+	// Apply filters
+	processes = a.filterProcesses(processes)
+	services = a.filterServices(services)
 
 	a.cfg.Logger.Debug().
 		Int("processes", len(processes)).

@@ -176,5 +176,5 @@ landing-page/
 # Local Gemini config
 .gemini/
 deployment/
-q-dev*.md
 *.code-workspace
+q-dev-*.md

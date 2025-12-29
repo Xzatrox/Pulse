@@ -88,6 +88,22 @@ for target in "${host_agent_order[@]}"; do
         ./cmd/pulse-agent
 done
 
+# Build osquery agents for every supported platform/architecture
+echo "Building osquery agents for all platforms..."
+for target in "${host_agent_order[@]}"; do
+    build_env="${host_agent_builds[$target]}"
+    output_path="$BUILD_DIR/pulse-osquery-agent-$target"
+    if [[ "$target" == windows-* ]]; then
+        output_path="${output_path}.exe"
+    fi
+
+    env $build_env go build \
+        -ldflags="-s -w -X github.com/rcourtman/pulse-go-rewrite/internal/osqueryagent.Version=v${VERSION}" \
+        -trimpath \
+        -o "$output_path" \
+        ./cmd/pulse-osquery-agent
+done
+
 # Build for different architectures (server + docker agent + sensor proxy)
 declare -A builds=(
     ["linux-amd64"]="GOOS=linux GOARCH=amd64"
@@ -168,6 +184,18 @@ for build_name in "${build_order[@]}"; do
     done
     ( cd "$staging_dir/bin" && ln -sf pulse-agent-windows-amd64.exe pulse-agent-windows-amd64 && ln -sf pulse-agent-windows-arm64.exe pulse-agent-windows-arm64 && ln -sf pulse-agent-windows-386.exe pulse-agent-windows-386 )
 
+    # Copy osquery agent binaries for every supported platform/architecture
+    for target in "${host_agent_order[@]}"; do
+        src="$BUILD_DIR/pulse-osquery-agent-$target"
+        dest="$staging_dir/bin/pulse-osquery-agent-$target"
+        if [[ "$target" == windows-* ]]; then
+            src="${src}.exe"
+            dest="${dest}.exe"
+        fi
+        cp "$src" "$dest"
+    done
+    ( cd "$staging_dir/bin" && ln -sf pulse-osquery-agent-windows-amd64.exe pulse-osquery-agent-windows-amd64 && ln -sf pulse-osquery-agent-windows-arm64.exe pulse-osquery-agent-windows-arm64 && ln -sf pulse-osquery-agent-windows-386.exe pulse-osquery-agent-windows-386 )
+
     # Copy scripts and VERSION metadata
     cp "scripts/install-docker-agent.sh" "$staging_dir/scripts/install-docker-agent.sh"
     cp "scripts/install-container-agent.sh" "$staging_dir/scripts/install-container-agent.sh"
@@ -177,6 +205,7 @@ for build_name in "${build_order[@]}"; do
     cp "scripts/install-sensor-proxy.sh" "$staging_dir/scripts/install-sensor-proxy.sh"
     cp "scripts/install-docker.sh" "$staging_dir/scripts/install-docker.sh"
     cp "scripts/install.sh" "$staging_dir/scripts/install.sh"
+    cp "scripts/install-osquery-agent.sh" "$staging_dir/scripts/install-osquery-agent.sh"
     [ -f "scripts/install.ps1" ] && cp "scripts/install.ps1" "$staging_dir/scripts/install.ps1"
     chmod 755 "$staging_dir/scripts/"*.sh
     chmod 755 "$staging_dir/scripts/"*.ps1 2>/dev/null || true
@@ -215,6 +244,7 @@ cp "scripts/uninstall-host-agent.ps1" "$universal_dir/scripts/uninstall-host-age
 cp "scripts/install-sensor-proxy.sh" "$universal_dir/scripts/install-sensor-proxy.sh"
 cp "scripts/install-docker.sh" "$universal_dir/scripts/install-docker.sh"
 cp "scripts/install.sh" "$universal_dir/scripts/install.sh"
+cp "scripts/install-osquery-agent.sh" "$universal_dir/scripts/install-osquery-agent.sh"
 [ -f "scripts/install.ps1" ] && cp "scripts/install.ps1" "$universal_dir/scripts/install.ps1"
 chmod 755 "$universal_dir/scripts/"*.sh
 chmod 755 "$universal_dir/scripts/"*.ps1 2>/dev/null || true
@@ -390,6 +420,18 @@ ln -s pulse-host-agent-windows-386.exe "$universal_dir/bin/pulse-host-agent-wind
 ln -s pulse-agent-windows-amd64.exe "$universal_dir/bin/pulse-agent-windows-amd64"
 ln -s pulse-agent-windows-arm64.exe "$universal_dir/bin/pulse-agent-windows-arm64"
 ln -s pulse-agent-windows-386.exe "$universal_dir/bin/pulse-agent-windows-386"
+
+# Copy osquery agent binaries to universal tarball
+for target in "${host_agent_order[@]}"; do
+    src="$BUILD_DIR/pulse-osquery-agent-$target"
+    if [[ "$target" == windows-* ]]; then
+        src="${src}.exe"
+    fi
+    cp "$src" "$universal_dir/bin/"
+done
+ln -s pulse-osquery-agent-windows-amd64.exe "$universal_dir/bin/pulse-osquery-agent-windows-amd64"
+ln -s pulse-osquery-agent-windows-arm64.exe "$universal_dir/bin/pulse-osquery-agent-windows-arm64"
+ln -s pulse-osquery-agent-windows-386.exe "$universal_dir/bin/pulse-osquery-agent-windows-386"
 
 # Create universal tarball
 cd "$universal_dir"

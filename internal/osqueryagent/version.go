@@ -1,3 +1,4 @@
 package osqueryagent
 
-const Version = "0.1.0"
+// Version is the semantic version of the osquery agent, set at build time via ldflags
+var Version = "dev"

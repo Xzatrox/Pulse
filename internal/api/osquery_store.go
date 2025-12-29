@@ -116,6 +116,18 @@ func (s *OsqueryStore) GetAllLatestReports() (map[string]interface{}, error) {
 	return reports, nil
 }
 
+func (s *OsqueryStore) CleanupOldReports(retentionDays int) (int64, error) {
+	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
+	result, err := s.db.Exec(
+		"DELETE FROM osquery_reports WHERE created_at < ?",
+		cutoffTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *OsqueryStore) Close() error {
 	return s.db.Close()
 }
