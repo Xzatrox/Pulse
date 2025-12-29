@@ -14,7 +14,7 @@ PULSE_URL="${PULSE_URL:-}"
 PULSE_TOKEN="${PULSE_TOKEN:-}"
 PULSE_AGENT_ID="${PULSE_AGENT_ID:-}"
 PULSE_INTERVAL="${PULSE_INTERVAL:-60s}"
-PULSE_FILTER_MODE="${PULSE_OSQUERY_FILTER_MODE:-aggressive}"
+PULSE_FILTER_MODE="${PULSE_OSQUERY_FILTER_MODE:-basic}"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/pulse"
 SERVICE_NAME="pulse-osquery-agent"
@@ -119,6 +119,16 @@ mkdir -p "$CONFIG_DIR"
 if [ -z "$PULSE_AGENT_ID" ]; then
   PULSE_AGENT_ID=$(hostname)
 fi
+
+# Validate filter mode
+case "$PULSE_FILTER_MODE" in
+  none|basic|aggressive)
+    ;; # Valid modes
+  *)
+    warn "Unknown filter mode '$PULSE_FILTER_MODE', using 'basic'"
+    PULSE_FILTER_MODE="basic"
+    ;;
+esac
 
 # Create config file
 cat > "$CONFIG_DIR/osquery-agent.yaml" <<EOF

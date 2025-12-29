@@ -17,16 +17,32 @@ type OsqueryStoreInterface interface {
 }
 
 type OsqueryAgentHandlers struct {
-	store OsqueryStoreInterface
+	store     OsqueryStoreInterface
+	dataPath  string
 }
 
 func NewOsqueryAgentHandlers(dataPath string) *OsqueryAgentHandlers {
 	store, err := NewOsqueryStore(dataPath)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to initialize osquery store")
-		return &OsqueryAgentHandlers{}
+		log.Error().Err(err).Str("dataPath", dataPath).Msg("Failed to initialize osquery store")
 	}
-	return &OsqueryAgentHandlers{store: store}
+	if store != nil {
+		log.Info().Str("dataPath", dataPath).Msg("osquery store initialized")
+	}
+	return &OsqueryAgentHandlers{store: store, dataPath: dataPath}
+}
+
+func (h *OsqueryAgentHandlers) ensureStore() error {
+	if h.store != nil {
+		return nil
+	}
+	store, err := NewOsqueryStore(h.dataPath)
+	if err != nil {
+		return err
+	}
+	h.store = store
+	log.Info().Str("dataPath", h.dataPath).Msg("osquery store initialized (retry)")
+	return nil
 }
 
 func (h *OsqueryAgentHandlers) HandleRegister(w http.ResponseWriter, req *http.Request) {
@@ -112,16 +128,33 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 		Int("services", len(report.Services)).
 		Msg("Received osquery report")
 
-	if h.store != nil {
-		timestamp, _ := time.Parse(time.RFC3339, report.Timestamp)
-		if timestamp.IsZero() {
-			timestamp = time.Now()
-		}
-		if err := h.store.SaveReport(agentID, report.Processes, report.Services, timestamp); err != nil {
-			log.Error().Err(err).Msg("Failed to save osquery report")
-		}
+	if h.store == nil {
+		log.Error().Msg("osquery store not initialized - report will be discarded")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Store not initialized",
+		})
+		return
 	}
 
+	timestamp, _ := time.Parse(time.RFC3339, report.Timestamp)
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	if err := h.store.SaveReport(agentID, report.Processes, report.Services, timestamp); err != nil {
+		log.Error().Err(err).Str("agent_id", agentID).Msg("Failed to save osquery report")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Failed to save report",
+		})
+		return
+	}
+
+	log.Debug().Str("agent_id", agentID).Int("processes", len(report.Processes)).Int("services", len(report.Services)).Msg("osquery report saved successfully")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -130,7 +163,8 @@ func (h *OsqueryAgentHandlers) HandleReport(w http.ResponseWriter, req *http.Req
 }
 
 func (h *OsqueryAgentHandlers) HandleAllReports(w http.ResponseWriter, req *http.Request) {
-	if h.store == nil {
+	if err := h.ensureStore(); err != nil {
+		log.Error().Err(err).Msg("Failed to initialize osquery store")
 		http.Error(w, "Store not initialized", http.StatusServiceUnavailable)
 		return
 	}
@@ -147,7 +181,8 @@ func (h *OsqueryAgentHandlers) HandleAllReports(w http.ResponseWriter, req *http
 }
 
 func (h *OsqueryAgentHandlers) handleGetReport(w http.ResponseWriter, req *http.Request) {
-	if h.store == nil {
+	if err := h.ensureStore(); err != nil {
+		log.Error().Err(err).Msg("Failed to initialize osquery store")
 		http.Error(w, "Store not initialized", http.StatusServiceUnavailable)
 		return
 	}
