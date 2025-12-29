@@ -175,9 +175,13 @@ func serveFrontendHandler() http.HandlerFunc {
 		}
 
 		// For SPA routing, serve index.html for non-API routes
+		// But exclude download/script paths
 		if !strings.HasPrefix(p, "/api/") &&
 			!strings.HasPrefix(p, "/ws") &&
-			!strings.HasPrefix(p, "/socket.io/") {
+			!strings.HasPrefix(p, "/socket.io/") &&
+			!strings.HasPrefix(p, "/download/") &&
+			!strings.HasSuffix(p, ".sh") &&
+			!strings.HasSuffix(p, ".ps1") {
 			// Serve index.html for client-side routing
 			indexFile, err := fsys.Open("index.html")
 			if err == nil {
