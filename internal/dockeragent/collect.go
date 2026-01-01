@@ -55,16 +55,29 @@ func (a *Agent) buildReport(ctx context.Context) (agentsdocker.Report, error) {
 
 	agentID := a.cfg.AgentID
 	if agentID == "" {
-		// Use cached daemon ID from init rather than info.ID from current call.
-		// Podman can return different/empty IDs across calls, causing token
-		// binding conflicts on the server.
-		agentID = a.daemonID
-	}
-	if agentID == "" {
-		agentID = a.machineID
-	}
-	if agentID == "" {
-		agentID = a.hostName
+		// In unified mode, use the EXACT same fallback chain as hostagent:
+		// machineID -> hostname. Never use daemonID in unified mode because
+		// hostagent doesn't use it, and using different IDs causes token
+		// binding conflicts on the server (reported in #985, #986).
+		if a.cfg.AgentType == "unified" {
+			agentID = a.machineID
+			if agentID == "" {
+				agentID = a.hostName
+			}
+		} else {
+			// Standalone mode: prefer daemonID for backward compatibility,
+			// then fall back to machineID -> hostname.
+			// Use cached daemon ID from init rather than info.ID from current call.
+			// Podman can return different/empty IDs across calls, causing token
+			// binding conflicts on the server.
+			agentID = a.daemonID
+			if agentID == "" {
+				agentID = a.machineID
+			}
+			if agentID == "" {
+				agentID = a.hostName
+			}
+		}
 	}
 	a.hostID = agentID
 
@@ -172,6 +185,18 @@ func (a *Agent) collectContainers(ctx context.Context) ([]agentsdocker.Container
 			}
 		}
 
+		// Skip backup containers created during updates - they're temporary
+		isBackup := false
+		for _, name := range summary.Names {
+			if strings.Contains(name, "_pulse_backup_") {
+				isBackup = true
+				break
+			}
+		}
+		if isBackup {
+			continue
+		}
+
 		active[summary.ID] = struct{}{}
 
 		container, err := a.collectContainer(ctx, summary)
@@ -193,7 +218,7 @@ func (a *Agent) pruneStaleCPUSamples(active map[string]struct{}) {
 	for id := range a.prevContainerCPU {
 		if _, ok := active[id]; !ok {
 			delete(a.prevContainerCPU, id)
-			// Reset stats failure counter when containers are removed, 
+			// Reset stats failure counter when containers are removed,
 			// though it's global per agent so not strictly necessary but good hygiene
 		}
 	}
@@ -359,20 +384,47 @@ func (a *Agent) collectContainer(ctx context.Context, summary containertypes.Sum
 		// The ImageID is a local content-addressable ID that differs from the registry manifest digest.
 		// We also get the architecture details to correctly resolve manifest lists from the registry.
 		digestForComparison, arch, os, variant := a.getImageRepoDigest(containerCtx, summary.ImageID, summary.Image)
-		
-		if digestForComparison == "" {
-			// Fall back to ImageID if we can't get RepoDigest (shouldn't compare as equal)
-			digestForComparison = summary.ImageID
+
+		var imageToCheck string
+		// Always prefer the image name from inspect config as it's the authoritative source
+		// and avoids issues with short IDs or digests in summary.
+		// HOWEVER, if the config image IS a digest (starts with sha256:), fall back to container.Image
+		// which usually contains the human-readable tag/name.
+		imageToCheck = container.Image
+		if inspect.Config != nil && inspect.Config.Image != "" {
+			if !strings.HasPrefix(inspect.Config.Image, "sha256:") {
+				imageToCheck = inspect.Config.Image
+			}
 		}
-		
-		result := a.registryChecker.CheckImageUpdate(ctx, container.Image, digestForComparison, arch, os, variant)
-		if result != nil {
+
+		// Additional safety: if imageToCheck is still a SHA, we can't check it
+		if strings.HasPrefix(imageToCheck, "sha256:") {
 			container.UpdateStatus = &agentsdocker.UpdateStatus{
-				UpdateAvailable: result.UpdateAvailable,
-				CurrentDigest:   result.CurrentDigest,
-				LatestDigest:    result.LatestDigest,
-				LastChecked:     result.CheckedAt,
-				Error:           result.Error,
+				UpdateAvailable: false,
+				CurrentDigest:   digestForComparison,
+				LastChecked:     time.Now(),
+				Error:           "digest-pinned image",
+			}
+			// Skip to end of update check block - don't call registry
+		} else {
+			a.logger.Debug().
+				Str("container", container.Name).
+				Str("image", imageToCheck).
+				Str("compareDigest", digestForComparison).
+				Str("arch", arch).
+				Str("os", os).
+				Str("variant", variant).
+				Msg("Checking update for container")
+
+			result := a.registryChecker.CheckImageUpdate(ctx, imageToCheck, digestForComparison, arch, os, variant)
+			if result != nil {
+				container.UpdateStatus = &agentsdocker.UpdateStatus{
+					UpdateAvailable: result.UpdateAvailable,
+					CurrentDigest:   result.CurrentDigest,
+					LatestDigest:    result.LatestDigest,
+					LastChecked:     result.CheckedAt,
+					Error:           result.Error,
+				}
 			}
 		}
 	}
@@ -416,7 +468,7 @@ func (a *Agent) getImageRepoDigest(ctx context.Context, imageID, imageName strin
 	for _, repoDigest := range imageInspect.RepoDigests {
 		// Extract just the digest part (after @)
 		if idx := strings.LastIndex(repoDigest, "@"); idx >= 0 {
-			repoRef := repoDigest[:idx] // e.g., "docker.io/library/nginx"
+			repoRef := repoDigest[:idx]  // e.g., "docker.io/library/nginx"
 			digest := repoDigest[idx+1:] // e.g., "sha256:abc..."
 
 			// Check if this RepoDigest matches our image reference
@@ -667,11 +719,25 @@ func calculateCPUPercent(stats containertypes.StatsResponse, hostCPUs int) float
 
 func calculateMemoryUsage(stats containertypes.StatsResponse) (usage int64, limit int64, percent float64) {
 	usage = int64(stats.MemoryStats.Usage)
+
+	// Subtract reclaimable cache from usage to match `docker stats` behavior.
+	// Docker subtracts cache/file to show "actual" memory usage rather than
+	// memory.current which includes reclaimable filesystem cache.
+	//
+	// cgroup v1: "cache" stat contains the reclaimable cache
+	// cgroup v2: "cache" doesn't exist, use "inactive_file" (preferred) or "file"
+	var cacheBytes uint64
 	if cache, ok := stats.MemoryStats.Stats["cache"]; ok {
-		usage -= int64(cache)
+		// cgroup v1
+		cacheBytes = cache
+	} else if inactiveFile, ok := stats.MemoryStats.Stats["inactive_file"]; ok {
+		// cgroup v2: inactive_file is the reclaimable portion of file cache
+		// This matches what docker CLI does internally
+		cacheBytes = inactiveFile
 	}
-	if usage < 0 {
-		usage = int64(stats.MemoryStats.Usage)
+
+	if cacheBytes > 0 && int64(cacheBytes) < usage {
+		usage -= int64(cacheBytes)
 	}
 
 	limit = int64(stats.MemoryStats.Limit)

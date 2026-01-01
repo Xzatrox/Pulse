@@ -11,6 +11,7 @@
 #   --enable-docker     Force enable Docker monitoring (default: auto-detect)
 #   --disable-docker    Disable Docker monitoring even if detected
 #   --enable-kubernetes Force enable Kubernetes monitoring (default: auto-detect)
+#   --kubeconfig <path> Path to kubeconfig file (auto-detected if not specified)
 #   --disable-kubernetes Disable Kubernetes monitoring even if detected
 #   --enable-proxmox    Force enable Proxmox integration (default: auto-detect)
 #   --disable-proxmox   Disable Proxmox integration even if detected
@@ -75,6 +76,7 @@ UNINSTALL="false"
 INSECURE="false"
 AGENT_ID=""
 ENABLE_COMMANDS="false"
+KUBECONFIG_PATH=""  # Path to kubeconfig file for Kubernetes monitoring
 DISK_EXCLUDES=()  # Array for multiple --disk-exclude values
 
 # Track if flags were explicitly set (to override auto-detection)
@@ -94,6 +96,33 @@ fail() {
         read -r -p "Press Enter to exit..." < /dev/tty
     fi
     exit 1
+}
+
+# --- SELinux Context Restoration ---
+# On SELinux-enforcing systems (Fedora, RHEL, CentOS), binaries in non-standard
+# locations need proper security contexts for systemd to execute them.
+restore_selinux_contexts() {
+    # Check if SELinux is available and enforcing
+    if ! command -v getenforce >/dev/null 2>&1; then
+        return 0  # SELinux not installed
+    fi
+
+    if [[ "$(getenforce 2>/dev/null)" != "Enforcing" ]]; then
+        return 0  # SELinux not enforcing
+    fi
+
+    # restorecon is the proper way to fix SELinux contexts
+    if command -v restorecon >/dev/null 2>&1; then
+        log_info "Restoring SELinux contexts for installed binaries..."
+        restorecon -v "${INSTALL_DIR}/${BINARY_NAME}" >/dev/null 2>&1 || true
+        log_info "SELinux context restored"
+    else
+        # Fallback to chcon if restorecon isn't available
+        if command -v chcon >/dev/null 2>&1; then
+            log_info "Setting SELinux context for installed binary..."
+            chcon -t bin_t "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null || true
+        fi
+    fi
 }
 
 # --- Auto-Detection Functions ---
@@ -119,19 +148,55 @@ detect_docker() {
 }
 
 detect_kubernetes() {
+    # If user already specified a kubeconfig path, just verify it exists
+    if [[ -n "$KUBECONFIG_PATH" ]]; then
+        if [[ -f "$KUBECONFIG_PATH" ]]; then
+            return 0
+        else
+            log_warn "Specified kubeconfig not found: $KUBECONFIG_PATH"
+            return 1
+        fi
+    fi
+
     # Check for kubectl and cluster access
     if command -v kubectl &>/dev/null; then
         # Try to connect to cluster (quick timeout)
         if timeout 3 kubectl cluster-info &>/dev/null 2>&1; then
+            # kubectl works, try to find the kubeconfig it's using
+            if [[ -n "$KUBECONFIG" ]] && [[ -f "$KUBECONFIG" ]]; then
+                KUBECONFIG_PATH="$KUBECONFIG"
+            elif [[ -f "${HOME}/.kube/config" ]]; then
+                KUBECONFIG_PATH="${HOME}/.kube/config"
+            fi
             return 0
         fi
     fi
-    # Check for kubeconfig file
-    if [[ -f "${HOME}/.kube/config" ]] || [[ -f "/etc/kubernetes/admin.conf" ]]; then
-        return 0
-    fi
-    # Check if running inside a Kubernetes pod
+
+    # Search for kubeconfig in common locations
+    # Priority: /etc/kubernetes/admin.conf (standard k8s), then user home directories
+    local search_paths=(
+        "/etc/kubernetes/admin.conf"
+        "/root/.kube/config"
+    )
+    
+    # Add all user home directories
+    for user_home in /home/*; do
+        if [[ -d "$user_home/.kube" ]]; then
+            search_paths+=("$user_home/.kube/config")
+        fi
+    done
+    
+    for kconfig in "${search_paths[@]}"; do
+        if [[ -f "$kconfig" ]]; then
+            KUBECONFIG_PATH="$kconfig"
+            log_info "Found kubeconfig at: $KUBECONFIG_PATH"
+            return 0
+        fi
+    done
+
+    # Check if running inside a Kubernetes pod (in-cluster config)
     if [[ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]]; then
+        # In-cluster config doesn't need a kubeconfig file
         return 0
     fi
     return 1
@@ -169,6 +234,7 @@ build_exec_args() {
     fi
     if [[ "$ENABLE_DOCKER" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-docker"; fi
     if [[ "$ENABLE_KUBERNETES" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-kubernetes"; fi
+    if [[ -n "$KUBECONFIG_PATH" ]]; then EXEC_ARGS="$EXEC_ARGS --kubeconfig ${KUBECONFIG_PATH}"; fi
     if [[ "$ENABLE_PROXMOX" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-proxmox"; fi
     if [[ -n "$PROXMOX_TYPE" ]]; then EXEC_ARGS="$EXEC_ARGS --proxmox-type ${PROXMOX_TYPE}"; fi
     if [[ "$INSECURE" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --insecure"; fi
@@ -192,6 +258,7 @@ build_exec_args_array() {
     fi
     if [[ "$ENABLE_DOCKER" == "true" ]]; then EXEC_ARGS_ARRAY+=(--enable-docker); fi
     if [[ "$ENABLE_KUBERNETES" == "true" ]]; then EXEC_ARGS_ARRAY+=(--enable-kubernetes); fi
+    if [[ -n "$KUBECONFIG_PATH" ]]; then EXEC_ARGS_ARRAY+=(--kubeconfig "$KUBECONFIG_PATH"); fi
     if [[ "$ENABLE_PROXMOX" == "true" ]]; then EXEC_ARGS_ARRAY+=(--enable-proxmox); fi
     if [[ -n "$PROXMOX_TYPE" ]]; then EXEC_ARGS_ARRAY+=(--proxmox-type "$PROXMOX_TYPE"); fi
     if [[ "$INSECURE" == "true" ]]; then EXEC_ARGS_ARRAY+=(--insecure); fi
@@ -215,6 +282,7 @@ while [[ $# -gt 0 ]]; do
         --disable-docker) ENABLE_DOCKER="false"; DOCKER_EXPLICIT="true"; shift ;;
         --enable-kubernetes) ENABLE_KUBERNETES="true"; KUBERNETES_EXPLICIT="true"; shift ;;
         --disable-kubernetes) ENABLE_KUBERNETES="false"; KUBERNETES_EXPLICIT="true"; shift ;;
+        --kubeconfig) KUBECONFIG_PATH="$2"; KUBERNETES_EXPLICIT="true"; ENABLE_KUBERNETES="true"; shift 2 ;;
         --enable-proxmox) ENABLE_PROXMOX="true"; PROXMOX_EXPLICIT="true"; shift ;;
         --disable-proxmox) ENABLE_PROXMOX="false"; PROXMOX_EXPLICIT="true"; shift ;;
         --proxmox-type) PROXMOX_TYPE="$2"; shift 2 ;;
@@ -703,6 +771,11 @@ if [[ "$OS" == "darwin" ]]; then
     if [[ "$ENABLE_KUBERNETES" == "true" ]]; then
         PLIST_ARGS="${PLIST_ARGS}
         <string>--enable-kubernetes</string>"
+    fi
+    if [[ -n "$KUBECONFIG_PATH" ]]; then
+        PLIST_ARGS="${PLIST_ARGS}
+        <string>--kubeconfig</string>
+        <string>${KUBECONFIG_PATH}</string>"
     fi
     if [[ "$INSECURE" == "true" ]]; then
         PLIST_ARGS="${PLIST_ARGS}
@@ -1198,6 +1271,7 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
     if [[ "$ENABLE_DOCKER" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-docker"; fi
     if [[ "$ENABLE_KUBERNETES" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-kubernetes"; fi
+    if [[ -n "$KUBECONFIG_PATH" ]]; then EXEC_ARGS="$EXEC_ARGS --kubeconfig ${KUBECONFIG_PATH}"; fi
     if [[ "$ENABLE_PROXMOX" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --enable-proxmox"; fi
     if [[ -n "$PROXMOX_TYPE" ]]; then EXEC_ARGS="$EXEC_ARGS --proxmox-type ${PROXMOX_TYPE}"; fi
     if [[ "$INSECURE" == "true" ]]; then EXEC_ARGS="$EXEC_ARGS --insecure"; fi
@@ -1227,6 +1301,9 @@ WantedBy=multi-user.target
 EOF
     # Restrict service file permissions (contains no secrets now, but good practice)
     chmod 644 "$UNIT"
+
+    # Restore SELinux contexts (required for Fedora, RHEL, CentOS)
+    restore_selinux_contexts
 
     systemctl daemon-reload
     systemctl enable "${AGENT_NAME}"

@@ -20,6 +20,7 @@ import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { aiChatStore } from '@/stores/aiChat';
 import { STORAGE_KEYS } from '@/utils/localStorage';
 import { useResourcesAsLegacy } from '@/hooks/useResources';
+import { useAlertsActivation } from '@/stores/alertsActivation';
 import { HostMetadataAPI, type HostMetadata } from '@/api/hostMetadata';
 import { UrlEditPopover, createUrlEditState } from '@/components/shared/UrlEditPopover';
 import { showSuccess, showError } from '@/utils/toast';
@@ -171,6 +172,9 @@ interface HostSensorSummaryForCell {
 function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null | undefined }) {
   const [showTooltip, setShowTooltip] = createSignal(false);
   const [tooltipPos, setTooltipPos] = createSignal({ x: 0, y: 0 });
+  const alertsActivation = useAlertsActivation();
+  const threshold = createMemo(() => alertsActivation.getTemperatureThreshold());
+  let closeTimeout: number | undefined;
 
   // Get the primary (highest) temperature for display
   const primaryTemp = createMemo(() => {
@@ -216,18 +220,40 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
   const textColorClass = createMemo(() => {
     const temp = primaryTemp();
     if (temp === null) return 'text-gray-400';
-    if (temp >= 80) return 'text-red-600 dark:text-red-400';
-    if (temp >= 70) return 'text-yellow-600 dark:text-yellow-400';
+    const critical = threshold();
+    const warning = Math.max(0, critical - 5);
+
+    if (temp >= critical) return 'text-red-600 dark:text-red-400';
+    if (temp >= warning) return 'text-yellow-600 dark:text-yellow-400';
     return 'text-gray-600 dark:text-gray-400';
   });
 
+  const tooltipColorClass = (temp: number) => {
+    const critical = threshold();
+    const warning = Math.max(0, critical - 5);
+    if (temp >= critical) return 'text-red-400';
+    if (temp >= warning) return 'text-yellow-400';
+    return 'text-gray-200';
+  }
+
   const handleMouseEnter = (e: MouseEvent) => {
+    if (closeTimeout) window.clearTimeout(closeTimeout);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top });
     setShowTooltip(true);
   };
 
   const handleMouseLeave = () => {
+    closeTimeout = window.setTimeout(() => {
+      setShowTooltip(false);
+    }, 150);
+  };
+
+  const handleTooltipEnter = () => {
+    if (closeTimeout) window.clearTimeout(closeTimeout);
+  };
+
+  const handleTooltipLeave = () => {
     setShowTooltip(false);
   };
 
@@ -293,27 +319,28 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
       <Show when={showTooltip() && hasSensors()}>
         <Portal mount={document.body}>
           <div
-            class="fixed z-[9999] pointer-events-none"
+            class="fixed z-[9999]"
             style={{
               left: `${tooltipPos().x}px`,
               top: `${tooltipPos().y - 8}px`,
               transform: 'translate(-50%, -100%)',
             }}
+            onMouseEnter={handleTooltipEnter}
+            onMouseLeave={handleTooltipLeave}
           >
-            <div class="bg-gray-900 dark:bg-gray-800 text-white text-[10px] rounded-md shadow-lg px-2 py-1.5 min-w-[160px] max-w-[280px] border border-gray-700">
+            <div class="bg-gray-900 dark:bg-gray-800 text-white text-[10px] rounded-md shadow-lg px-2 py-1.5 min-w-[160px] max-w-[280px] border border-gray-700 max-h-[400px] overflow-y-auto custom-scrollbar">
               {/* Temperature section */}
               <Show when={sortedTemps().length > 0}>
-                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1 sticky top-0 bg-gray-900 dark:bg-gray-800 z-10">
                   Temperatures
                 </div>
                 <div class="space-y-0.5 mb-2">
                   <For each={sortedTemps()}>
                     {([name, temp]) => {
-                      const colorClass = temp >= 80 ? 'text-red-400' : temp >= 70 ? 'text-yellow-400' : 'text-gray-200';
                       return (
                         <div class="flex justify-between gap-3 py-0.5">
                           <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
-                          <span class={`font-medium font-mono ${colorClass}`}>{formatTemperature(temp)}</span>
+                          <span class={`font-medium font-mono ${tooltipColorClass(temp)}`}>{formatTemperature(temp)}</span>
                         </div>
                       );
                     }}
@@ -323,7 +350,7 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
 
               {/* Disk temperatures section (SMART) */}
               <Show when={sortedSmart().length > 0}>
-                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1 sticky top-0 bg-gray-900 dark:bg-gray-800 z-10">
                   Disk Temperatures
                 </div>
                 <div class="space-y-0.5 mb-2">
@@ -357,7 +384,7 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
 
               {/* Fan speeds section */}
               <Show when={sortedFans().length > 0}>
-                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1 sticky top-0 bg-gray-900 dark:bg-gray-800 z-10">
                   Fan Speeds
                 </div>
                 <div class="space-y-0.5 mb-2">
@@ -374,17 +401,16 @@ function HostTemperatureCell(props: { sensors: HostSensorSummaryForCell | null |
 
               {/* Additional sensors section */}
               <Show when={sortedAdditional().length > 0}>
-                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1">
+                <div class="font-medium mb-1 text-gray-300 border-b border-gray-700 pb-1 sticky top-0 bg-gray-900 dark:bg-gray-800 z-10">
                   Other Sensors
                 </div>
                 <div class="space-y-0.5">
                   <For each={sortedAdditional()}>
                     {([name, temp]) => {
-                      const colorClass = temp >= 80 ? 'text-red-400' : temp >= 70 ? 'text-yellow-400' : 'text-gray-200';
                       return (
                         <div class="flex justify-between gap-3 py-0.5">
                           <span class="text-gray-400 truncate max-w-[140px]">{formatSensorName(name)}</span>
-                          <span class={`font-medium font-mono ${colorClass}`}>{formatTemperature(temp)}</span>
+                          <span class={`font-medium font-mono ${tooltipColorClass(temp)}`}>{formatTemperature(temp)}</span>
                         </div>
                       );
                     }}

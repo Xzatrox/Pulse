@@ -14,6 +14,7 @@ export interface AlertThresholds {
   networkIn?: HysteresisThreshold;
   networkOut?: HysteresisThreshold;
   temperature?: HysteresisThreshold;
+  diskTemperature?: HysteresisThreshold;
   disableConnectivity?: boolean; // Disable connectivity/powered-off alerts
   poweredOffSeverity?: 'warning' | 'critical';
   // Legacy support for backward compatibility
@@ -25,7 +26,7 @@ export interface AlertThresholds {
   networkInLegacy?: number;
   networkOutLegacy?: number;
   // Allow indexing with string
-  [key: string]: HysteresisThreshold | number | boolean | string | undefined;
+  [key: string]: HysteresisThreshold | BackupAlertConfig | SnapshotAlertConfig | number | boolean | string | undefined;
 }
 
 export type RawOverrideConfig = AlertThresholds & {
@@ -33,6 +34,8 @@ export type RawOverrideConfig = AlertThresholds & {
   disableConnectivity?: boolean;
   poweredOffSeverity?: 'warning' | 'critical';
   note?: string;
+  backup?: BackupAlertConfig;
+  snapshot?: SnapshotAlertConfig;
   // NOTE: To disable individual metrics, set threshold to -1
 };
 

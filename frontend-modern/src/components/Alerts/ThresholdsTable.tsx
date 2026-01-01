@@ -67,6 +67,8 @@ interface Override {
   disableConnectivity?: boolean; // For nodes only - disable offline alerts
   poweredOffSeverity?: 'warning' | 'critical';
   note?: string;
+  backup?: BackupAlertConfig;
+  snapshot?: SnapshotAlertConfig;
   thresholds: {
     cpu?: number;
     memory?: number;
@@ -90,7 +92,8 @@ const normalizeThresholdLabel = (label: string): string =>
     .replace('disk r', 'diskRead')
     .replace('disk w', 'diskWrite')
     .replace('net in', 'networkIn')
-    .replace('net out', 'networkOut');
+    .replace('net out', 'networkOut')
+    .replace('disk temp', 'diskTemperature');
 
 const pmgColumn = (key: keyof PMGThresholdDefaults, label: string) => ({
   key,
@@ -148,6 +151,7 @@ interface SimpleThresholds {
   networkIn?: number;
   networkOut?: number;
   temperature?: number; // For nodes only
+  diskTemperature?: number; // For host agents
   [key: string]: number | undefined; // Add index signature for compatibility
 }
 
@@ -1304,6 +1308,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         disableConnectivity: override?.disableConnectivity || false,
         thresholds: override?.thresholds || {},
         defaults: props.guestDefaults,
+        backup: override?.backup || props.backupDefaults(),
+        snapshot: override?.snapshot || props.snapshotDefaults(),
         poweredOffSeverity: overrideSeverity,
       };
     });
@@ -1934,6 +1940,90 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
     props.setHasUnsavedChanges(true);
   };
 
+  const toggleBackup = (resourceId: string, forceState?: boolean) => {
+    const allGuests = guestsFlat();
+    const allDockerContainers = dockerContainersFlat();
+    const resource = [...allGuests, ...allDockerContainers].find((r) => r.id === resourceId);
+    if (!resource || (resource.type !== 'guest' && resource.type !== 'dockerContainer')) return;
+
+    const existingOverride = props.overrides().find((o) => o.id === resourceId);
+    const baseConfig = existingOverride?.backup || props.backupDefaults();
+    const newEnabled = forceState !== undefined ? forceState : !baseConfig.enabled;
+    const newBackup = { ...baseConfig, enabled: newEnabled };
+
+    const override: Override = {
+      ...(existingOverride || {
+        id: resourceId,
+        name: resource.name,
+        type: resource.type as any,
+        vmid: 'vmid' in resource ? (resource as any).vmid : undefined,
+        node: 'node' in resource ? (resource as any).node : undefined,
+        instance: 'instance' in resource ? (resource as any).instance : undefined,
+        thresholds: {},
+      }),
+      backup: newBackup,
+    };
+
+    const existingIndex = props.overrides().findIndex((o) => o.id === resourceId);
+    if (existingIndex >= 0) {
+      const newOverrides = [...props.overrides()];
+      newOverrides[existingIndex] = override;
+      props.setOverrides(newOverrides);
+    } else {
+      props.setOverrides([...props.overrides(), override]);
+    }
+
+    const newRawConfig = { ...props.rawOverridesConfig() };
+    newRawConfig[resourceId] = {
+      ...(newRawConfig[resourceId] || {}),
+      backup: newBackup,
+    };
+    props.setRawOverridesConfig(newRawConfig);
+    props.setHasUnsavedChanges(true);
+  };
+
+  const toggleSnapshot = (resourceId: string, forceState?: boolean) => {
+    const allGuests = guestsFlat();
+    const allDockerContainers = dockerContainersFlat();
+    const resource = [...allGuests, ...allDockerContainers].find((r) => r.id === resourceId);
+    if (!resource || (resource.type !== 'guest' && resource.type !== 'dockerContainer')) return;
+
+    const existingOverride = props.overrides().find((o) => o.id === resourceId);
+    const baseConfig = existingOverride?.snapshot || props.snapshotDefaults();
+    const newEnabled = forceState !== undefined ? forceState : !baseConfig.enabled;
+    const newSnapshot = { ...baseConfig, enabled: newEnabled };
+
+    const override: Override = {
+      ...(existingOverride || {
+        id: resourceId,
+        name: resource.name,
+        type: resource.type as any,
+        vmid: 'vmid' in resource ? (resource as any).vmid : undefined,
+        node: 'node' in resource ? (resource as any).node : undefined,
+        instance: 'instance' in resource ? (resource as any).instance : undefined,
+        thresholds: {},
+      }),
+      snapshot: newSnapshot,
+    };
+
+    const existingIndex = props.overrides().findIndex((o) => o.id === resourceId);
+    if (existingIndex >= 0) {
+      const newOverrides = [...props.overrides()];
+      newOverrides[existingIndex] = override;
+      props.setOverrides(newOverrides);
+    } else {
+      props.setOverrides([...props.overrides(), override]);
+    }
+
+    const newRawConfig = { ...props.rawOverridesConfig() };
+    newRawConfig[resourceId] = {
+      ...(newRawConfig[resourceId] || {}),
+      snapshot: newSnapshot,
+    };
+    props.setRawOverridesConfig(newRawConfig);
+    props.setHasUnsavedChanges(true);
+  };
+
   const toggleDisabled = (resourceId: string, forceState?: boolean) => {
     // Flatten grouped guests to find the resource
     const allGuests = guestsFlat();
@@ -1984,8 +2074,12 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         resourceType: resource.resourceType,
         vmid: 'vmid' in resource ? resource.vmid : undefined,
         node: 'node' in resource ? resource.node : undefined,
-        instance: 'instance' in resource ? resource.instance : undefined,
+        instance: 'instance' in resource ? (resource as any).instance : undefined,
         disabled: newDisabledState,
+        disableConnectivity: existingOverride?.disableConnectivity,
+        poweredOffSeverity: existingOverride?.poweredOffSeverity,
+        backup: existingOverride?.backup,
+        snapshot: existingOverride?.snapshot,
         thresholds: cleanThresholds, // Only keep actual threshold overrides
       };
 
@@ -2016,6 +2110,19 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         hysteresisThresholds.disabled = true;
       } else {
         delete hysteresisThresholds.disabled;
+      }
+
+      if (override.backup) {
+        hysteresisThresholds.backup = override.backup;
+      }
+      if (override.snapshot) {
+        hysteresisThresholds.snapshot = override.snapshot;
+      }
+      if (override.disableConnectivity) {
+        hysteresisThresholds.disableConnectivity = true;
+      }
+      if (override.poweredOffSeverity) {
+        hysteresisThresholds.poweredOffSeverity = override.poweredOffSeverity;
       }
 
       if (Object.keys(hysteresisThresholds).length === 0) {
@@ -2099,6 +2206,10 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         type: resource.type as OverrideType,
         resourceType: resource.resourceType,
         disableConnectivity: newDisableConnectivity,
+        disabled: existingOverride?.disabled,
+        poweredOffSeverity: existingOverride?.poweredOffSeverity,
+        backup: existingOverride?.backup,
+        snapshot: existingOverride?.snapshot,
         thresholds: cleanThresholds,
       };
 
@@ -2130,6 +2241,19 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         hysteresisThresholds.disableConnectivity = true;
       } else {
         delete hysteresisThresholds.disableConnectivity;
+      }
+
+      if (override.backup) {
+        hysteresisThresholds.backup = override.backup;
+      }
+      if (override.snapshot) {
+        hysteresisThresholds.snapshot = override.snapshot;
+      }
+      if (override.disabled) {
+        hysteresisThresholds.disabled = true;
+      }
+      if (override.poweredOffSeverity) {
+        hysteresisThresholds.poweredOffSeverity = override.poweredOffSeverity;
       }
 
       if (Object.keys(hysteresisThresholds).length === 0) {
@@ -2208,6 +2332,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
       disabled: overrideDisabled,
       disableConnectivity: newDisableConnectivity,
       poweredOffSeverity: newDisableConnectivity ? undefined : newSeverity,
+      backup: existingOverride?.backup,
+      snapshot: existingOverride?.snapshot,
       thresholds: cleanThresholds,
     };
 
@@ -2245,6 +2371,13 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
       if (newSeverity) {
         hysteresisThresholds.poweredOffSeverity = newSeverity;
       }
+    }
+
+    if (override.backup) {
+      hysteresisThresholds.backup = override.backup;
+    }
+    if (override.snapshot) {
+      hysteresisThresholds.snapshot = override.snapshot;
     }
 
     if (Object.keys(hysteresisThresholds).length > 0) {
@@ -2586,6 +2719,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                     'CPU %',
                     'Memory %',
                     'Disk %',
+                    'Backup',
+                    'Snapshot',
                     'Disk R MB/s',
                     'Disk W MB/s',
                     'Net In MB/s',
@@ -2599,6 +2734,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                   onRemoveOverride={removeOverride}
                   onToggleDisabled={toggleDisabled}
                   onToggleNodeConnectivity={toggleNodeConnectivity}
+                  onToggleBackup={toggleBackup}
+                  onToggleSnapshot={toggleSnapshot}
                   showOfflineAlertsColumn={true}
                   editingId={editingId}
                   editingThresholds={editingThresholds}
@@ -3002,7 +3139,7 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
               <ResourceTable
                 title="Host Agents"
                 resources={hostAgentsWithOverrides()}
-                columns={['CPU %', 'Memory %', 'Disk %']}
+                columns={['CPU %', 'Memory %', 'Disk %', 'Disk Temp °C']}
                 activeAlerts={props.activeAlerts}
                 emptyMessage="No host agents match the current filters."
                 onEdit={startEditing}

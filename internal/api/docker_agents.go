@@ -32,6 +32,7 @@ var errInvalidCommandStatus = errors.New("invalid command status")
 // normalizeCommandStatus converts a client-provided status string into a canonical
 // internal status constant. It accepts multiple aliases for each status:
 //   - acknowledged: "", "ack", "acknowledged"
+//   - in_progress: "in_progress", "progress"
 //   - completed: "success", "completed", "complete"
 //   - failed: "fail", "failed", "error"
 //
@@ -41,6 +42,8 @@ func normalizeCommandStatus(status string) (string, error) {
 	switch status {
 	case "", "ack", "acknowledged":
 		return monitoring.DockerCommandStatusAcknowledged, nil
+	case "in_progress", "progress":
+		return monitoring.DockerCommandStatusInProgress, nil
 	case "success", "completed", "complete":
 		return monitoring.DockerCommandStatusCompleted, nil
 	case "fail", "failed", "error":
@@ -143,6 +146,12 @@ func (h *DockerAgentHandlers) HandleDockerHostActions(w http.ResponseWriter, r *
 	// Check if this is a custom display name update request
 	if strings.HasSuffix(r.URL.Path, "/display-name") && r.Method == http.MethodPut {
 		h.HandleSetCustomDisplayName(w, r)
+		return
+	}
+
+	// Check if this is a check updates request
+	if strings.HasSuffix(r.URL.Path, "/check-updates") && r.Method == http.MethodPost {
+		h.HandleCheckUpdates(w, r)
 		return
 	}
 
@@ -514,3 +523,38 @@ func (h *DockerAgentHandlers) HandleContainerUpdate(w http.ResponseWriter, r *ht
 	}
 }
 
+// HandleCheckUpdates triggers an immediate update check for all containers on a Docker host.
+// POST /api/agents/docker/hosts/{hostId}/check-updates
+func (h *DockerAgentHandlers) HandleCheckUpdates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is allowed", nil)
+		return
+	}
+
+	trimmedPath := strings.TrimPrefix(r.URL.Path, "/api/agents/docker/hosts/")
+	trimmedPath = strings.TrimSuffix(trimmedPath, "/check-updates")
+	hostID := strings.TrimSpace(trimmedPath)
+	if hostID == "" {
+		writeErrorResponse(w, http.StatusBadRequest, "missing_host_id", "Docker host ID is required", nil)
+		return
+	}
+
+	// Queue the check updates command
+	commandStatus, err := h.monitor.QueueDockerCheckUpdatesCommand(hostID)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, "check_updates_command_failed", err.Error(), nil)
+		return
+	}
+
+	go h.wsHub.BroadcastState(h.monitor.GetState().ToFrontend())
+
+	if err := utils.WriteJSONResponse(w, map[string]any{
+		"success":   true,
+		"commandId": commandStatus.ID,
+		"hostId":    hostID,
+		"message":   "Check for updates command queued",
+		"note":      "The agent will clear its registry cache and check for updates on the next report cycle",
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to serialize check updates response")
+	}
+}

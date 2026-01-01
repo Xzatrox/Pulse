@@ -57,6 +57,7 @@ data/
 .env
 .env.local
 .env.*.local
+.env.devcontainer
 
 # Build outputs
 dist/
@@ -178,3 +179,4 @@ landing-page/
 deployment/
 *.code-workspace
 q-dev-*.md
+start-pulse-agent.sh

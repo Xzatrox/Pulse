@@ -203,10 +203,13 @@ type ThresholdConfig struct {
 	DiskWrite           *HysteresisThreshold `json:"diskWrite,omitempty"`
 	NetworkIn           *HysteresisThreshold `json:"networkIn,omitempty"`
 	NetworkOut          *HysteresisThreshold `json:"networkOut,omitempty"`
-	Usage               *HysteresisThreshold `json:"usage,omitempty"`       // For storage devices
-	Temperature         *HysteresisThreshold `json:"temperature,omitempty"` // For node CPU temperature
+	Usage               *HysteresisThreshold `json:"usage,omitempty"`           // For storage devices
+	Temperature         *HysteresisThreshold `json:"temperature,omitempty"`     // For node CPU temperature
+	DiskTemperature     *HysteresisThreshold `json:"diskTemperature,omitempty"` // For host SMART temperatures
+	Backup              *BackupAlertConfig   `json:"backup,omitempty"`
+	Snapshot            *SnapshotAlertConfig `json:"snapshot,omitempty"`
 	Note                *string              `json:"note,omitempty"`
-	// Legacy fields for backward compatibility
+	// Legacy thresholds for backwards compatibility
 	CPULegacy        *float64 `json:"cpuLegacy,omitempty"`
 	MemoryLegacy     *float64 `json:"memoryLegacy,omitempty"`
 	DiskLegacy       *float64 `json:"diskLegacy,omitempty"`
@@ -359,11 +362,12 @@ type BackupAlertConfig struct {
 
 // GuestLookup describes a guest identity used for snapshot/backup evaluations.
 type GuestLookup struct {
-	Name     string
-	Instance string
-	Node     string
-	Type     string
-	VMID     int
+	ResourceID string
+	Name       string
+	Instance   string
+	Node       string
+	Type       string
+	VMID       int
 }
 
 // AlertConfig represents the complete alert configuration
@@ -512,9 +516,9 @@ type Manager struct {
 	offlineConfirmations  map[string]int                  // Track consecutive offline counts for all resources
 	dockerOfflineCount    map[string]int                  // Track consecutive offline counts for Docker hosts
 	dockerStateConfirm    map[string]int                  // Track consecutive state confirmations for Docker containers
-	dockerRestartTracking  map[string]*dockerRestartRecord // Track restart counts and times for restart loop detection
-	dockerLastExitCode     map[string]int                  // Track last exit code for OOM detection
-	dockerUpdateFirstSeen  map[string]time.Time            // Track when image updates were first detected for alert delay
+	dockerRestartTracking map[string]*dockerRestartRecord // Track restart counts and times for restart loop detection
+	dockerLastExitCode    map[string]int                  // Track last exit code for OOM detection
+	dockerUpdateFirstSeen map[string]time.Time            // Track when image updates were first detected for alert delay
 	// PMG quarantine growth tracking
 	pmgQuarantineHistory map[string][]pmgQuarantineSnapshot // Track quarantine snapshots for growth detection
 	// PMG anomaly detection tracking
@@ -537,7 +541,8 @@ type Manager struct {
 type ackRecord struct {
 	acknowledged bool
 	user         string
-	time         time.Time
+	time         time.Time // When the alert was acknowledged
+	inactiveAt   time.Time // When the alert was removed (zero if still active)
 }
 
 type dockerRestartRecord struct {
@@ -554,18 +559,18 @@ func NewManager() *Manager {
 		activeAlerts:          make(map[string]*Alert),
 		historyManager:        NewHistoryManager(alertsDir),
 		escalationStop:        make(chan struct{}),
-		alertRateLimit:         make(map[string][]time.Time),
-		recentAlerts:           make(map[string]*Alert),
-		suppressedUntil:        make(map[string]time.Time),
-		recentlyResolved:       make(map[string]*ResolvedAlert),
-		pendingAlerts:          make(map[string]time.Time),
-		nodeOfflineCount:       make(map[string]int),
-		offlineConfirmations:   make(map[string]int),
-		dockerOfflineCount:     make(map[string]int),
-		dockerStateConfirm:     make(map[string]int),
-		dockerRestartTracking:  make(map[string]*dockerRestartRecord),
-		dockerLastExitCode:     make(map[string]int),
-		dockerUpdateFirstSeen:  make(map[string]time.Time),
+		alertRateLimit:        make(map[string][]time.Time),
+		recentAlerts:          make(map[string]*Alert),
+		suppressedUntil:       make(map[string]time.Time),
+		recentlyResolved:      make(map[string]*ResolvedAlert),
+		pendingAlerts:         make(map[string]time.Time),
+		nodeOfflineCount:      make(map[string]int),
+		offlineConfirmations:  make(map[string]int),
+		dockerOfflineCount:    make(map[string]int),
+		dockerStateConfirm:    make(map[string]int),
+		dockerRestartTracking: make(map[string]*dockerRestartRecord),
+		dockerLastExitCode:    make(map[string]int),
+		dockerUpdateFirstSeen: make(map[string]time.Time),
 		pmgQuarantineHistory:  make(map[string][]pmgQuarantineSnapshot),
 		pmgAnomalyTrackers:    make(map[string]*pmgAnomalyTracker),
 		ackState:              make(map[string]ackRecord),
@@ -594,9 +599,10 @@ func NewManager() *Manager {
 				Temperature: &HysteresisThreshold{Trigger: 80, Clear: 75}, // Warning at 80°C, clear at 75°C
 			},
 			HostDefaults: ThresholdConfig{
-				CPU:    &HysteresisThreshold{Trigger: 80, Clear: 75},
-				Memory: &HysteresisThreshold{Trigger: 85, Clear: 80},
-				Disk:   &HysteresisThreshold{Trigger: 90, Clear: 85},
+				CPU:             &HysteresisThreshold{Trigger: 80, Clear: 75},
+				Memory:          &HysteresisThreshold{Trigger: 85, Clear: 80},
+				Disk:            &HysteresisThreshold{Trigger: 90, Clear: 85},
+				DiskTemperature: &HysteresisThreshold{Trigger: 55, Clear: 50},
 			},
 			DockerDefaults: DockerThresholdConfig{
 				CPU:                     HysteresisThreshold{Trigger: 80, Clear: 75},
@@ -916,6 +922,15 @@ func (m *Manager) checkFlappingLocked(alertID string) bool {
 
 func (m *Manager) dispatchAlert(alert *Alert, async bool) bool {
 	if m.onAlert == nil || alert == nil {
+		return false
+	}
+
+	// Don't dispatch notifications for acknowledged alerts
+	if alert.Acknowledged {
+		log.Debug().
+			Str("alertID", alert.ID).
+			Str("ackUser", alert.AckUser).
+			Msg("Alert notification suppressed - already acknowledged")
 		return false
 	}
 
@@ -1319,6 +1334,18 @@ func normalizeHostDefaults(config *AlertConfig) {
 			config.HostDefaults.Disk.Clear = 85
 		}
 	}
+
+	if config.HostDefaults.DiskTemperature == nil || config.HostDefaults.DiskTemperature.Trigger < 0 {
+		config.HostDefaults.DiskTemperature = &HysteresisThreshold{Trigger: 55, Clear: 50}
+	} else if config.HostDefaults.DiskTemperature.Trigger == 0 {
+		config.HostDefaults.DiskTemperature.Clear = 0
+	} else if config.HostDefaults.DiskTemperature.Clear <= 0 {
+		config.HostDefaults.DiskTemperature.Clear = config.HostDefaults.DiskTemperature.Trigger - 5
+		if config.HostDefaults.DiskTemperature.Clear <= 0 {
+			config.HostDefaults.DiskTemperature.Clear = 50
+		}
+	}
+	ensureValidHysteresis(config.HostDefaults.DiskTemperature, "host.diskTemperature")
 }
 
 // normalizeGeneralSettings ensures general alert settings have valid values
@@ -2189,8 +2216,6 @@ func (m *Manager) CheckGuest(guest interface{}, instanceName string) {
 		return
 	}
 
-
-
 	// Check ignored prefixes
 	for _, prefix := range ignoredGuestPrefixes {
 		if prefix != "" && strings.HasPrefix(name, prefix) {
@@ -2698,6 +2723,7 @@ func (m *Manager) CheckHost(host models.Host) {
 		// Clear any existing host alerts when all host alerts are disabled
 		m.clearHostMetricAlerts(host.ID)
 		m.clearHostDiskAlerts(host.ID)
+		m.clearHostRAIDAlerts(host.ID)
 		return
 	}
 
@@ -2706,6 +2732,7 @@ func (m *Manager) CheckHost(host models.Host) {
 		if thresholds.Disabled {
 			m.clearHostMetricAlerts(host.ID)
 			m.clearHostDiskAlerts(host.ID)
+			m.clearHostRAIDAlerts(host.ID)
 			return
 		}
 	}
@@ -2756,6 +2783,31 @@ func (m *Manager) CheckHost(host models.Host) {
 		m.clearHostMetricAlerts(host.ID, "memory")
 	}
 
+	if thresholds.DiskTemperature != nil && thresholds.DiskTemperature.Trigger > 0 {
+		if len(host.Sensors.SMART) > 0 {
+			for _, disk := range host.Sensors.SMART {
+				if disk.Temperature > 0 && !disk.Standby {
+					// Use specific resource ID for the disk: hostID/disk-temp:device
+					tempResourceID := fmt.Sprintf("%s/disk_temp:%s", hostResourceID(host.ID), sanitizeHostComponent(disk.Device))
+					tempResourceName := fmt.Sprintf("%s (%s Temp)", host.DisplayName, disk.Device)
+
+					diskTempMetadata := cloneMetadata(baseMetadata)
+					diskTempMetadata["metric"] = "disk_temperature"
+					diskTempMetadata["device"] = disk.Device
+					diskTempMetadata["temperature"] = disk.Temperature
+					diskTempMetadata["model"] = disk.Model
+
+					m.checkMetric(tempResourceID, tempResourceName, nodeName, disk.Device, "Host", "disk_temperature", float64(disk.Temperature), thresholds.DiskTemperature, &metricOptions{Metadata: diskTempMetadata})
+				}
+			}
+		}
+	} else {
+		// We can't easily clear all disk temp alerts without tracking them,
+		// but checkMetric logic handles auto-resolution if value drops.
+		// If feature is disabled, ideally we should clear existing alerts.
+		// For now simple implementation.
+	}
+
 	seenDisks := make(map[string]struct{}, len(host.Disks))
 	if thresholds.Disk != nil && thresholds.Disk.Trigger > 0 {
 		for _, disk := range host.Disks {
@@ -2785,6 +2837,16 @@ func (m *Manager) CheckHost(host models.Host) {
 	// Check RAID arrays for degraded or failed state
 	if len(host.RAID) > 0 {
 		for _, array := range host.RAID {
+			// Skip Synology internal system arrays (md0/md1) which often report false positives.
+			// DSM handles these differently and they're not user-facing storage arrays.
+			deviceLower := strings.ToLower(strings.TrimPrefix(array.Device, "/dev/"))
+			if deviceLower == "md0" || deviceLower == "md1" {
+				// Still clear any existing alerts for these devices
+				alertID := fmt.Sprintf("host-%s-raid-%s", host.ID, sanitizeRAIDDevice(array.Device))
+				m.clearAlert(alertID)
+				continue
+			}
+
 			raidResourceID := fmt.Sprintf("host-%s-raid-%s", host.ID, sanitizeRAIDDevice(array.Device))
 			raidName := fmt.Sprintf("%s - %s (%s)", resourceName, array.Device, array.Level)
 
@@ -2936,6 +2998,7 @@ func (m *Manager) HandleHostRemoved(host models.Host) {
 	m.HandleHostOnline(host)
 	m.clearHostMetricAlerts(host.ID)
 	m.clearHostDiskAlerts(host.ID)
+	m.clearHostRAIDAlerts(host.ID)
 }
 
 // HandleHostOffline raises an alert when a host agent stops reporting.
@@ -3101,6 +3164,23 @@ func (m *Manager) cleanupHostDiskAlerts(host models.Host, seen map[string]struct
 			continue
 		}
 		m.clearAlertNoLock(alertID)
+	}
+}
+
+func (m *Manager) clearHostRAIDAlerts(hostID string) {
+	if hostID == "" {
+		return
+	}
+
+	prefix := fmt.Sprintf("host-%s-raid-", hostID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for alertID := range m.activeAlerts {
+		if strings.HasPrefix(alertID, prefix) {
+			m.clearAlertNoLock(alertID)
+		}
 	}
 }
 
@@ -4716,32 +4796,49 @@ func (m *Manager) CheckSnapshotsForInstance(instanceName string, snapshots []mod
 			sizeGiB = float64(snapshot.SizeBytes) / gib
 		}
 
-		var (
-			ageLevel       AlertLevel
-			ageThreshold   int
-			sizeLevel      AlertLevel
-			sizeThreshold  float64
-			triggeredStats []string
-		)
+		// Determine thresholds for this snapshot
+		resourceID := fmt.Sprintf("%s:%s:%d", snapshot.Instance, snapshot.Node, snapshot.VMID)
+		m.mu.RLock()
+		gh := m.getGuestThresholds(nil, resourceID)
+		m.mu.RUnlock()
 
-		if snapshotCfg.CriticalDays > 0 && ageDays >= float64(snapshotCfg.CriticalDays) {
+		if gh.Disabled {
+			continue
+		}
+
+		currentSnapshotCfg := snapshotCfg
+		if gh.Snapshot != nil {
+			currentSnapshotCfg = *gh.Snapshot
+		}
+
+		if !currentSnapshotCfg.Enabled {
+			continue
+		}
+
+		var ageLevel AlertLevel
+		var ageThreshold int
+		var sizeLevel AlertLevel
+		var sizeThreshold float64
+		var triggeredStats []string
+
+		if currentSnapshotCfg.CriticalDays > 0 && ageDays >= float64(currentSnapshotCfg.CriticalDays) {
 			ageLevel = AlertLevelCritical
-			ageThreshold = snapshotCfg.CriticalDays
+			ageThreshold = currentSnapshotCfg.CriticalDays
 			triggeredStats = append(triggeredStats, "age")
-		} else if snapshotCfg.WarningDays > 0 && ageDays >= float64(snapshotCfg.WarningDays) {
+		} else if currentSnapshotCfg.WarningDays > 0 && ageDays >= float64(currentSnapshotCfg.WarningDays) {
 			ageLevel = AlertLevelWarning
-			ageThreshold = snapshotCfg.WarningDays
+			ageThreshold = currentSnapshotCfg.WarningDays
 			triggeredStats = append(triggeredStats, "age")
 		}
 
 		if snapshot.SizeBytes > 0 {
-			if snapshotCfg.CriticalSizeGiB > 0 && sizeGiB >= snapshotCfg.CriticalSizeGiB {
+			if currentSnapshotCfg.CriticalSizeGiB > 0 && sizeGiB >= currentSnapshotCfg.CriticalSizeGiB {
 				sizeLevel = AlertLevelCritical
-				sizeThreshold = snapshotCfg.CriticalSizeGiB
+				sizeThreshold = currentSnapshotCfg.CriticalSizeGiB
 				triggeredStats = append(triggeredStats, "size")
-			} else if snapshotCfg.WarningSizeGiB > 0 && sizeGiB >= snapshotCfg.WarningSizeGiB {
+			} else if currentSnapshotCfg.WarningSizeGiB > 0 && sizeGiB >= currentSnapshotCfg.WarningSizeGiB {
 				sizeLevel = AlertLevelWarning
-				sizeThreshold = snapshotCfg.WarningSizeGiB
+				sizeThreshold = currentSnapshotCfg.WarningSizeGiB
 				triggeredStats = append(triggeredStats, "size")
 			}
 		}
@@ -5141,15 +5238,33 @@ func (m *Manager) CheckBackups(
 		}
 		ageDaysRounded := math.Round(ageDays*10) / 10
 
+		// Determine thresholds for this backup
+		currentBackupCfg := backupCfg
+		if record.lookup.ResourceID != "" {
+			m.mu.RLock()
+			gh := m.getGuestThresholds(nil, record.lookup.ResourceID)
+			m.mu.RUnlock()
+			if gh.Disabled {
+				continue
+			}
+			if gh.Backup != nil {
+				currentBackupCfg = *gh.Backup
+			}
+		}
+
+		if !currentBackupCfg.Enabled {
+			continue
+		}
+
 		var level AlertLevel
 		var threshold int
 		switch {
-		case backupCfg.CriticalDays > 0 && ageDays >= float64(backupCfg.CriticalDays):
+		case currentBackupCfg.CriticalDays > 0 && ageDays >= float64(currentBackupCfg.CriticalDays):
 			level = AlertLevelCritical
-			threshold = backupCfg.CriticalDays
-		case backupCfg.WarningDays > 0 && ageDays >= float64(backupCfg.WarningDays):
+			threshold = currentBackupCfg.CriticalDays
+		case currentBackupCfg.WarningDays > 0 && ageDays >= float64(currentBackupCfg.WarningDays):
 			level = AlertLevelWarning
-			threshold = backupCfg.WarningDays
+			threshold = currentBackupCfg.WarningDays
 		default:
 			continue
 		}
@@ -6162,6 +6277,11 @@ func (m *Manager) removeActiveAlertNoLock(alertID string) {
 	// NOTE: Don't delete ackState here - preserve it so if the same alert
 	// reappears (e.g., powered-off VM during backup), the acknowledgement
 	// is restored via preserveAlertState. ackState is cleaned up in Cleanup().
+	// Update inactiveAt so the cleanup TTL is measured from removal time, not ack time.
+	if record, exists := m.ackState[alertID]; exists {
+		record.inactiveAt = time.Now()
+		m.ackState[alertID] = record
+	}
 }
 
 // GetActiveAlerts returns all active alerts
@@ -7948,11 +8068,18 @@ func (m *Manager) Cleanup(maxAge time.Duration) {
 	}
 
 	// Clean up stale ackState entries for alerts that no longer exist
-	// Keep ackState for 1 hour to handle transient alert clears (e.g., backups)
+	// Keep ackState for 1 hour after the alert was removed (not from ack time)
+	// to handle transient alert clears (e.g., backups of powered-off VMs)
 	ackStateTTL := 1 * time.Hour
 	for id, record := range m.ackState {
 		if _, alertExists := m.activeAlerts[id]; !alertExists {
-			if now.Sub(record.time) > ackStateTTL {
+			// Use inactiveAt (when alert was removed) for TTL, not ack time
+			checkTime := record.inactiveAt
+			if checkTime.IsZero() {
+				// Fallback for legacy entries without inactiveAt
+				checkTime = record.time
+			}
+			if now.Sub(checkTime) > ackStateTTL {
 				delete(m.ackState, id)
 			}
 		}
@@ -8130,6 +8257,7 @@ func cloneThresholdConfig(cfg ThresholdConfig) ThresholdConfig {
 	clone.NetworkIn = cloneThreshold(cfg.NetworkIn)
 	clone.NetworkOut = cloneThreshold(cfg.NetworkOut)
 	clone.Temperature = cloneThreshold(cfg.Temperature)
+	clone.DiskTemperature = cloneThreshold(cfg.DiskTemperature)
 	clone.Usage = cloneThreshold(cfg.Usage)
 	clone.Note = cloneStringPtr(cfg.Note)
 	return clone
@@ -8189,6 +8317,10 @@ func (m *Manager) applyThresholdOverride(base ThresholdConfig, override Threshol
 
 	if override.Temperature != nil {
 		result.Temperature = ensureHysteresisThreshold(cloneThreshold(override.Temperature))
+	}
+
+	if override.DiskTemperature != nil {
+		result.DiskTemperature = ensureHysteresisThreshold(cloneThreshold(override.DiskTemperature))
 	}
 
 	if override.Usage != nil {
@@ -8913,7 +9045,12 @@ func (m *Manager) cleanupStaleMaps() {
 	// Clean up ackState for alerts that no longer exist and are older than threshold
 	for alertID, record := range m.ackState {
 		if _, hasAlert := m.activeAlerts[alertID]; !hasAlert {
-			if now.Sub(record.time) > staleThreshold {
+			// Use inactiveAt (when alert was removed) for TTL, not ack time
+			checkTime := record.inactiveAt
+			if checkTime.IsZero() {
+				checkTime = record.time
+			}
+			if now.Sub(checkTime) > staleThreshold {
 				delete(m.ackState, alertID)
 				cleaned++
 			}

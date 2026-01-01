@@ -368,6 +368,9 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
     return containers;
   });
 
+  // Track batch update status: key is hostId:containerId
+  const [batchUpdateState, setBatchUpdateState] = createStore<Record<string, 'updating' | 'queued' | 'error'>>({});
+
   const handleUpdateAll = async () => {
     const targets = updateableContainers();
     if (targets.length === 0) return;
@@ -380,6 +383,11 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
       10000,
     );
 
+    // Mark all as updating
+    targets.forEach(t => {
+      setBatchUpdateState(`${t.hostId}:${t.containerId}`, 'updating');
+    });
+
     let successCount = 0;
     let failCount = 0;
 
@@ -388,19 +396,19 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
     for (let i = 0; i < targets.length; i += chunkSize) {
       const chunk = targets.slice(i, i + chunkSize);
 
-      // Update progress toast (if we had a way to update existing toasts, which we might not have in this simple util, but we can emit new ones or just rely on the final report)
-      // For now, let's just process.
-
       await Promise.all(chunk.map(async (target) => {
+        const key = `${target.hostId}:${target.containerId}`;
         try {
           await MonitoringAPI.updateDockerContainer(
             target.hostId,
             target.containerId,
             target.containerName,
           );
+          setBatchUpdateState(key, 'queued');
           successCount++;
         } catch (err) {
           failCount++;
+          setBatchUpdateState(key, 'error');
           logger.error(`Failed to trigger update for ${target.containerName}`, err);
         }
       }));
@@ -408,12 +416,44 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
 
     if (failCount === 0) {
       showSuccess(`Successfully queued updates for all ${targets.length} containers.`);
+      // Clear success states after delay
+      setTimeout(() => {
+        targets.forEach(t => {
+          const key = `${t.hostId}:${t.containerId}`;
+          if (batchUpdateState[key] === 'queued') {
+            setBatchUpdateState(key, undefined as any);
+          }
+        });
+      }, 5000);
     } else if (successCount === 0) {
       showError(`Failed to queue any updates. Check console for details.`);
     } else {
       showToast('warning', 'Batch Update Completed', `Queued ${successCount} updates. ${failCount} failed.`);
     }
   };
+
+  const handleCheckUpdates = async (hostId: string) => {
+    try {
+      await MonitoringAPI.checkDockerUpdates(hostId);
+      showSuccess('Update check triggered. The host will refresh container information shortly.');
+    } catch (err) {
+      showError(`Failed to trigger update check: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // Get the command status for the selected host to show checking indicator
+  const selectedHostCommandStatus = createMemo(() => {
+    const hostId = selectedHostId();
+    if (!hostId) return undefined;
+
+    const host = props.hosts.find(h => h.id === hostId);
+    if (!host?.command) return undefined;
+
+    // Only show status for check_updates commands
+    if (host.command.type !== 'check_updates') return undefined;
+
+    return host.command.status;
+  });
 
   const renderFilter = () => (
     <DockerFilter
@@ -431,8 +471,12 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
       }}
       updateAvailableCount={updateableContainers().length}
       onUpdateAll={handleUpdateAll}
+      onCheckUpdates={handleCheckUpdates}
+      activeHostId={selectedHostId()}
+      checkingUpdatesStatus={selectedHostCommandStatus()}
     />
   );
+
 
   return (
     <div class="space-y-0">
@@ -558,6 +602,7 @@ export const DockerHosts: Component<DockerHostsProps> = (props) => {
             dockerMetadata={dockerMetadata()}
             dockerHostMetadata={dockerHostMetadata()}
             onCustomUrlUpdate={handleCustomUrlUpdate}
+            batchUpdateState={batchUpdateState}
           />
         </Show>
       </Show>

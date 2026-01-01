@@ -31,25 +31,26 @@ type TargetConfig struct {
 
 // Config describes runtime configuration for the Docker agent.
 type Config struct {
-	PulseURL           string
-	APIToken           string
-	Interval           time.Duration
-	HostnameOverride   string
-	AgentID            string
-	AgentType          string // "unified" when running as part of pulse-agent, empty for standalone
-	AgentVersion       string // Version to report; if empty, uses dockeragent.Version
-	InsecureSkipVerify bool
-	DisableAutoUpdate  bool
-	Targets            []TargetConfig
-	ContainerStates    []string
-	SwarmScope         string
-	Runtime            string
-	IncludeServices    bool
-	IncludeTasks       bool
-	IncludeContainers  bool
-	CollectDiskMetrics bool
-	LogLevel           zerolog.Level
-	Logger             *zerolog.Logger
+	PulseURL            string
+	APIToken            string
+	Interval            time.Duration
+	HostnameOverride    string
+	AgentID             string
+	AgentType           string // "unified" when running as part of pulse-agent, empty for standalone
+	AgentVersion        string // Version to report; if empty, uses dockeragent.Version
+	InsecureSkipVerify  bool
+	DisableAutoUpdate   bool
+	DisableUpdateChecks bool // Disable Docker image update detection (registry checks)
+	Targets             []TargetConfig
+	ContainerStates     []string
+	SwarmScope          string
+	Runtime             string
+	IncludeServices     bool
+	IncludeTasks        bool
+	IncludeContainers   bool
+	CollectDiskMetrics  bool
+	LogLevel            zerolog.Level
+	Logger              *zerolog.Logger
 }
 
 var allowedContainerStates = map[string]string{
@@ -246,7 +247,7 @@ func New(cfg Config) (*Agent, error) {
 		stateFilters:     stateFilters,
 		prevContainerCPU: make(map[string]cpuSample),
 		reportBuffer:     buffer.New[agentsdocker.Report](bufferCapacity),
-		registryChecker:  NewRegistryChecker(*logger),
+		registryChecker:  newRegistryCheckerWithConfig(*logger, !cfg.DisableUpdateChecks),
 	}
 
 	for _, state := range stateFilters {
@@ -530,6 +531,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	updateTimer := newTimerFn(initialDelay)
 	defer stopTimer(updateTimer)
 
+	// Periodic cleanup of orphaned backups (every 15 minutes)
+	cleanupTicker := newTickerFn(15 * time.Minute)
+	defer cleanupTicker.Stop()
+
 	// Perform cleanup of orphaned backup containers on startup
 	go a.cleanupOrphanedBackups(ctx)
 
@@ -559,6 +564,8 @@ func (a *Agent) Run(ctx context.Context) error {
 				nextDelay = updateInterval
 			}
 			updateTimer.Reset(nextDelay)
+		case <-cleanupTicker.C:
+			go a.cleanupOrphanedBackups(ctx)
 		}
 	}
 }
@@ -730,10 +737,34 @@ func (a *Agent) handleCommand(ctx context.Context, target TargetConfig, command 
 		return a.handleStopCommand(ctx, target, command)
 	case agentsdocker.CommandTypeUpdateContainer:
 		return a.handleUpdateContainerCommand(ctx, target, command)
+	case agentsdocker.CommandTypeCheckUpdates:
+		return a.handleCheckUpdatesCommand(ctx, target, command)
 	default:
 		a.logger.Warn().Str("command", command.Type).Msg("Received unsupported control command")
 		return nil
 	}
+}
+
+func (a *Agent) handleCheckUpdatesCommand(ctx context.Context, target TargetConfig, command agentsdocker.Command) error {
+	a.logger.Info().Str("commandID", command.ID).Msg("Received check updates command from Pulse")
+
+	if a.registryChecker != nil {
+		a.registryChecker.ForceCheck()
+	}
+
+	// Send intermediate completion ack
+	if err := a.sendCommandAck(ctx, target, command.ID, agentsdocker.CommandStatusCompleted, "Registry cache cleared; checking for updates on next report cycle"); err != nil {
+		return fmt.Errorf("send check updates acknowledgement: %w", err)
+	}
+
+	// Trigger an immediate collection cycle to report updates
+	go func() {
+		// Small delay to ensure the ack response completes
+		sleepFn(1 * time.Second)
+		a.collectOnce(ctx)
+	}()
+
+	return nil
 }
 
 func (a *Agent) handleStopCommand(ctx context.Context, target TargetConfig, command agentsdocker.Command) error {
@@ -927,7 +958,6 @@ func newHTTPClient(insecure bool) *http.Client {
 	}
 }
 
-
 func (a *Agent) Close() error {
 	return a.docker.Close()
 }
@@ -936,10 +966,27 @@ func readMachineID() (string, error) {
 	for _, path := range machineIDPaths {
 		data, err := osReadFileFn(path)
 		if err == nil {
-			return strings.TrimSpace(string(data)), nil
+			id := strings.TrimSpace(string(data))
+			// Format as UUID if it's a 32-char hex string (like machine-id typically is),
+			// to match the behavior of the host agent.
+			if len(id) == 32 && isHexString(id) {
+				return fmt.Sprintf("%s-%s-%s-%s-%s",
+					id[0:8], id[8:12], id[12:16],
+					id[16:20], id[20:32]), nil
+			}
+			return id, nil
 		}
 	}
 	return "", errors.New("machine-id not found")
+}
+
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func readSystemUptime() int64 {
@@ -949,8 +996,6 @@ func readSystemUptime() int64 {
 	}
 	return int64(seconds)
 }
-
-
 
 // detectHostRemovedError checks if the response body contains a host removal error
 func detectHostRemovedError(body []byte) string {

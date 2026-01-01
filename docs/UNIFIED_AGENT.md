@@ -45,6 +45,8 @@ curl -fsSL http://<pulse-ip>:7655/install.sh | \
 | `--enable-host` | `PULSE_ENABLE_HOST` | Enable host metrics | `true` |
 | `--enable-docker` | `PULSE_ENABLE_DOCKER` | Force enable Docker metrics | **auto-detect** |
 | `--disable-docker` | - | Disable Docker even if detected | - |
+| `--docker-runtime` | `PULSE_DOCKER_RUNTIME` | Force container runtime: `auto`, `docker`, or `podman` | `auto` |
+
 | `--enable-kubernetes` | `PULSE_ENABLE_KUBERNETES` | Force enable Kubernetes metrics | **auto-detect** |
 | `--disable-kubernetes` | - | Disable Kubernetes even if detected | - |
 | `--enable-proxmox` | `PULSE_ENABLE_PROXMOX` | Force enable Proxmox integration | **auto-detect** |
@@ -59,10 +61,12 @@ curl -fsSL http://<pulse-ip>:7655/install.sh | \
 | `--kube-include-all-deployments` | `PULSE_KUBE_INCLUDE_ALL_DEPLOYMENTS` | Include all deployments, not just problems | `false` |
 | `--kube-max-pods` | `PULSE_KUBE_MAX_PODS` | Max pods per report | `200` |
 | `--disable-auto-update` | `PULSE_DISABLE_AUTO_UPDATE` | Disable auto-updates | `false` |
+| `--disable-docker-update-checks` | `PULSE_DISABLE_DOCKER_UPDATE_CHECKS` | Disable Docker image update detection | `false` |
 | `--insecure` | `PULSE_INSECURE_SKIP_VERIFY` | Skip TLS verification | `false` |
 | `--hostname` | `PULSE_HOSTNAME` | Override hostname | *(OS hostname)* |
 | `--agent-id` | `PULSE_AGENT_ID` | Unique agent identifier | *(machine-id)* |
 | `--health-addr` | `PULSE_HEALTH_ADDR` | Health/metrics server address | `:9191` |
+
 
 ## Auto-Detection
 
@@ -148,6 +152,8 @@ The agent can report S.M.A.R.T. disk temperatures when running in Agent mode. Th
 - Disks in standby mode are reported as such (no temperature) to avoid waking them
 - S.M.A.R.T. data is collected alongside other host metrics
 - If `smartctl` is not available, S.M.A.R.T. monitoring is silently skipped
+- **Disk exclusions** (`--disk-exclude` / `PULSE_DISK_EXCLUDE`) also apply to S.M.A.R.T. monitoring.
+  Use patterns like `sda`, `/dev/sdb`, `nvme*`, or `*cache*` to exclude specific block devices.
 
 
 ## Auto-Update
