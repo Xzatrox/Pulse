@@ -20,23 +20,23 @@ import (
 
 // ConfigPersistence handles saving and loading configuration
 type ConfigPersistence struct {
-	mu                 sync.RWMutex
-	tx                 *importTransaction
-	configDir          string
-	alertFile          string
-	emailFile          string
-	webhookFile        string
-	appriseFile        string
-	nodesFile          string
-	systemFile         string
-	oidcFile           string
+	mu                       sync.RWMutex
+	tx                       *importTransaction
+	configDir                string
+	alertFile                string
+	emailFile                string
+	webhookFile              string
+	appriseFile              string
+	nodesFile                string
+	systemFile               string
+	oidcFile                 string
 	apiTokensFile            string
 	envTokenSuppressionsFile string
 	aiFile                   string
-	aiFindingsFile     string
-	aiPatrolRunsFile   string
-	aiUsageHistoryFile string
-	crypto             *crypto.CryptoManager
+	aiFindingsFile           string
+	aiPatrolRunsFile         string
+	aiUsageHistoryFile       string
+	crypto                   *crypto.CryptoManager
 }
 
 // NewConfigPersistence creates a new config persistence manager.
@@ -69,21 +69,21 @@ func newConfigPersistence(configDir string) (*ConfigPersistence, error) {
 	}
 
 	cp := &ConfigPersistence{
-		configDir:          configDir,
-		alertFile:          filepath.Join(configDir, "alerts.json"),
-		emailFile:          filepath.Join(configDir, "email.enc"),
-		webhookFile:        filepath.Join(configDir, "webhooks.enc"),
-		appriseFile:        filepath.Join(configDir, "apprise.enc"),
-		nodesFile:          filepath.Join(configDir, "nodes.enc"),
-		systemFile:         filepath.Join(configDir, "system.json"),
-		oidcFile:           filepath.Join(configDir, "oidc.enc"),
-		apiTokensFile:             filepath.Join(configDir, "api_tokens.json"),
-		envTokenSuppressionsFile:  filepath.Join(configDir, "env_token_suppressions.json"),
-		aiFile:                    filepath.Join(configDir, "ai.enc"),
-		aiFindingsFile:     filepath.Join(configDir, "ai_findings.json"),
-		aiPatrolRunsFile:   filepath.Join(configDir, "ai_patrol_runs.json"),
-		aiUsageHistoryFile: filepath.Join(configDir, "ai_usage_history.json"),
-		crypto:             cryptoMgr,
+		configDir:                configDir,
+		alertFile:                filepath.Join(configDir, "alerts.json"),
+		emailFile:                filepath.Join(configDir, "email.enc"),
+		webhookFile:              filepath.Join(configDir, "webhooks.enc"),
+		appriseFile:              filepath.Join(configDir, "apprise.enc"),
+		nodesFile:                filepath.Join(configDir, "nodes.enc"),
+		systemFile:               filepath.Join(configDir, "system.json"),
+		oidcFile:                 filepath.Join(configDir, "oidc.enc"),
+		apiTokensFile:            filepath.Join(configDir, "api_tokens.json"),
+		envTokenSuppressionsFile: filepath.Join(configDir, "env_token_suppressions.json"),
+		aiFile:                   filepath.Join(configDir, "ai.enc"),
+		aiFindingsFile:           filepath.Join(configDir, "ai_findings.json"),
+		aiPatrolRunsFile:         filepath.Join(configDir, "ai_patrol_runs.json"),
+		aiUsageHistoryFile:       filepath.Join(configDir, "ai_usage_history.json"),
+		crypto:                   cryptoMgr,
 	}
 
 	log.Debug().
@@ -956,6 +956,11 @@ type SystemSettings struct {
 	MetricsRetentionHourlyDays  int `json:"metricsRetentionHourlyDays,omitempty"`  // Hourly averages, default: 7 days
 	MetricsRetentionDailyDays   int `json:"metricsRetentionDailyDays,omitempty"`   // Daily averages, default: 90 days
 
+	// Docker update control - server-wide settings
+	// These allow admins to control Docker update features globally, addressing concerns
+	// about Pulse being a "monitoring-first" tool vs an orchestration tool.
+	DisableDockerUpdateActions bool `json:"disableDockerUpdateActions"` // Hide update buttons while still detecting updates
+
 	// APIToken removed - now handled via .env file only
 }
 
@@ -1626,12 +1631,13 @@ type PatrolRunRecord struct {
 	Type             string    `json:"type"` // "quick" or "deep"
 	ResourcesChecked int       `json:"resources_checked"`
 	// Breakdown by resource type
-	NodesChecked   int `json:"nodes_checked"`
-	GuestsChecked  int `json:"guests_checked"`
-	DockerChecked  int `json:"docker_checked"`
-	StorageChecked int `json:"storage_checked"`
-	HostsChecked   int `json:"hosts_checked"`
-	PBSChecked     int `json:"pbs_checked"`
+	NodesChecked      int `json:"nodes_checked"`
+	GuestsChecked     int `json:"guests_checked"`
+	DockerChecked     int `json:"docker_checked"`
+	StorageChecked    int `json:"storage_checked"`
+	HostsChecked      int `json:"hosts_checked"`
+	PBSChecked        int `json:"pbs_checked"`
+	KubernetesChecked int `json:"kubernetes_checked"`
 	// Findings from this run
 	NewFindings      int      `json:"new_findings"`
 	ExistingFindings int      `json:"existing_findings"`

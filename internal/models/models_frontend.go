@@ -31,6 +31,7 @@ type NodeFrontend struct {
 	IsClusterMember              bool         `json:"isClusterMember,omitempty"`
 	ClusterName                  string       `json:"clusterName,omitempty"`
 	TemperatureMonitoringEnabled *bool        `json:"temperatureMonitoringEnabled,omitempty"` // Per-node temperature monitoring override
+	LinkedHostAgentId            string       `json:"linkedHostAgentId,omitempty"`            // ID of linked host agent (for "Via agent" badge)
 }
 
 // VMFrontend represents a VM with frontend-friendly field names
@@ -241,27 +242,27 @@ type RemovedKubernetesClusterFrontend struct {
 
 // DockerContainerFrontend represents a Docker container for the frontend
 type DockerContainerFrontend struct {
-	ID                  string                           `json:"id"`
-	Name                string                           `json:"name"`
-	Image               string                           `json:"image"`
-	State               string                           `json:"state"`
-	Status              string                           `json:"status"`
-	Health              string                           `json:"health,omitempty"`
-	CPUPercent          float64                          `json:"cpuPercent"`
-	MemoryUsage         int64                            `json:"memoryUsageBytes"`
-	MemoryLimit         int64                            `json:"memoryLimitBytes"`
-	MemoryPercent       float64                          `json:"memoryPercent"`
-	UptimeSeconds       int64                            `json:"uptimeSeconds"`
-	RestartCount        int                              `json:"restartCount"`
-	ExitCode            int                              `json:"exitCode"`
-	CreatedAt           int64                            `json:"createdAt"`
-	StartedAt           *int64                           `json:"startedAt,omitempty"`
-	FinishedAt          *int64                           `json:"finishedAt,omitempty"`
-	Ports               []DockerContainerPortFrontend    `json:"ports,omitempty"`
-	Labels              map[string]string                `json:"labels,omitempty"`
-	Networks            []DockerContainerNetworkFrontend `json:"networks,omitempty"`
-	WritableLayerBytes  int64                            `json:"writableLayerBytes,omitempty"`
-	RootFilesystemBytes int64                            `json:"rootFilesystemBytes,omitempty"`
+	ID                  string                               `json:"id"`
+	Name                string                               `json:"name"`
+	Image               string                               `json:"image"`
+	State               string                               `json:"state"`
+	Status              string                               `json:"status"`
+	Health              string                               `json:"health,omitempty"`
+	CPUPercent          float64                              `json:"cpuPercent"`
+	MemoryUsage         int64                                `json:"memoryUsageBytes"`
+	MemoryLimit         int64                                `json:"memoryLimitBytes"`
+	MemoryPercent       float64                              `json:"memoryPercent"`
+	UptimeSeconds       int64                                `json:"uptimeSeconds"`
+	RestartCount        int                                  `json:"restartCount"`
+	ExitCode            int                                  `json:"exitCode"`
+	CreatedAt           int64                                `json:"createdAt"`
+	StartedAt           *int64                               `json:"startedAt,omitempty"`
+	FinishedAt          *int64                               `json:"finishedAt,omitempty"`
+	Ports               []DockerContainerPortFrontend        `json:"ports,omitempty"`
+	Labels              map[string]string                    `json:"labels,omitempty"`
+	Networks            []DockerContainerNetworkFrontend     `json:"networks,omitempty"`
+	WritableLayerBytes  int64                                `json:"writableLayerBytes,omitempty"`
+	RootFilesystemBytes int64                                `json:"rootFilesystemBytes,omitempty"`
 	BlockIO             *DockerContainerBlockIOFrontend      `json:"blockIo,omitempty"`
 	Mounts              []DockerContainerMountFrontend       `json:"mounts,omitempty"`
 	Podman              *DockerPodmanContainerFrontend       `json:"podman,omitempty"`
@@ -276,7 +277,6 @@ type DockerContainerUpdateStatusFrontend struct {
 	LastChecked     int64  `json:"lastChecked"`
 	Error           string `json:"error,omitempty"` // e.g., "rate limited", "auth required"
 }
-
 
 // DockerContainerPortFrontend represents a container port mapping
 type DockerContainerPortFrontend struct {
@@ -436,14 +436,17 @@ type HostFrontend struct {
 	TokenHint         string                     `json:"tokenHint,omitempty"`
 	TokenLastUsedAt   *int64                     `json:"tokenLastUsedAt,omitempty"`
 	Tags              []string                   `json:"tags,omitempty"`
+	CommandsEnabled   bool                       `json:"commandsEnabled,omitempty"` // Whether AI command execution is enabled
+	IsLegacy          bool                       `json:"isLegacy,omitempty"`        // True if using legacy agent protocol
+	LinkedNodeId      string                     `json:"linkedNodeId,omitempty"`    // ID of linked PVE node (if running on a node)
 }
 
 // HostSensorSummaryFrontend mirrors HostSensorSummary with primitives for the frontend.
 type HostSensorSummaryFrontend struct {
-	TemperatureCelsius map[string]float64       `json:"temperatureCelsius,omitempty"`
-	FanRPM             map[string]float64       `json:"fanRpm,omitempty"`
-	Additional         map[string]float64       `json:"additional,omitempty"`
-	SMART              []HostDiskSMARTFrontend  `json:"smart,omitempty"` // S.M.A.R.T. disk data
+	TemperatureCelsius map[string]float64      `json:"temperatureCelsius,omitempty"`
+	FanRPM             map[string]float64      `json:"fanRpm,omitempty"`
+	Additional         map[string]float64      `json:"additional,omitempty"`
+	SMART              []HostDiskSMARTFrontend `json:"smart,omitempty"` // S.M.A.R.T. disk data
 }
 
 // HostDiskSMARTFrontend represents S.M.A.R.T. data for a disk from a host agent.

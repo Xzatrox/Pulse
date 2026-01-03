@@ -190,7 +190,7 @@ func (r *Router) setupRoutes() {
 	hostMetadataHandler := NewHostMetadataHandler(r.config.DataPath)
 	r.configHandlers = NewConfigHandlers(r.config, r.monitor, r.reloadFunc, r.wsHub, guestMetadataHandler, r.reloadSystemSettings)
 	updateHandlers := NewUpdateHandlers(r.updateManager, r.updateHistory)
-	r.dockerAgentHandlers = NewDockerAgentHandlers(r.monitor, r.wsHub)
+	r.dockerAgentHandlers = NewDockerAgentHandlers(r.monitor, r.wsHub, r.config)
 	r.kubernetesAgentHandlers = NewKubernetesAgentHandlers(r.monitor, r.wsHub)
 	r.hostAgentHandlers = NewHostAgentHandlers(r.monitor, r.wsHub)
 	osqueryAgentHandlers := NewOsqueryAgentHandlers(r.config.DataPath)
@@ -1866,7 +1866,10 @@ func (r *Router) reloadSystemSettings() {
 		r.cachedAllowedOrigins = systemSettings.AllowedEmbedOrigins
 
 		// Update HideLocalLogin so it takes effect immediately without restart
-		r.config.HideLocalLogin = systemSettings.HideLocalLogin
+		// BUT respect environment variable override if present
+		if !r.config.EnvOverrides["PULSE_AUTH_HIDE_LOCAL_LOGIN"] {
+			r.config.HideLocalLogin = systemSettings.HideLocalLogin
+		}
 
 		// Update webhook allowed private CIDRs in notification manager
 		if r.monitor != nil {

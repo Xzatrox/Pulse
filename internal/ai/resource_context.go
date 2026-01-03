@@ -15,14 +15,14 @@ type ResourceProvider interface {
 	GetWorkloads() []resources.Resource
 	GetByType(t resources.ResourceType) []resources.Resource
 	GetStats() resources.StoreStats
-	
+
 	// Cross-platform query methods
 	GetTopByCPU(limit int, types []resources.ResourceType) []resources.Resource
 	GetTopByMemory(limit int, types []resources.ResourceType) []resources.Resource
 	GetTopByDisk(limit int, types []resources.ResourceType) []resources.Resource
 	GetRelated(resourceID string) map[string][]resources.Resource
 	GetResourceSummary() resources.ResourceSummary
-	
+
 	// AI Routing support
 	FindContainerHost(containerNameOrID string) string
 }
@@ -181,11 +181,12 @@ func (s *Service) buildUnifiedResourceContext() string {
 			sections = append(sections, fmt.Sprintf("\n**On %s:**", parentName))
 			for _, w := range children {
 				typeLabel := string(w.Type)
-				if w.Type == resources.ResourceTypeVM {
+				switch w.Type {
+				case resources.ResourceTypeVM:
 					typeLabel = "VM"
-				} else if w.Type == resources.ResourceTypeContainer {
+				case resources.ResourceTypeContainer:
 					typeLabel = "LXC"
-				} else if w.Type == resources.ResourceTypeDockerContainer {
+				case resources.ResourceTypeDockerContainer:
 					typeLabel = "Docker"
 				}
 
@@ -243,7 +244,7 @@ func (s *Service) buildUnifiedResourceContext() string {
 		if summary.WithAlerts > 0 {
 			sections = append(sections, fmt.Sprintf("- Resources with alerts: %d", summary.WithAlerts))
 		}
-		
+
 		// Show average resource usage by type
 		if len(summary.ByType) > 0 {
 			sections = append(sections, "- Average utilization by type:")

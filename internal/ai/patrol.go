@@ -106,8 +106,8 @@ func CalculatePatrolThresholdsWithMode(provider ThresholdProvider, proactiveMode
 	// Exact mode (default): use exact alert thresholds
 	// Watch is slightly below warning, warning is at threshold
 	return PatrolThresholds{
-		NodeCPUWatch:    clampThreshold(nodeCPU - 5),  // Watch slightly before threshold
-		NodeCPUWarning:  nodeCPU,                       // Warning at exact threshold
+		NodeCPUWatch:    clampThreshold(nodeCPU - 5), // Watch slightly before threshold
+		NodeCPUWarning:  nodeCPU,                     // Warning at exact threshold
 		NodeMemWatch:    clampThreshold(nodeMem - 5),
 		NodeMemWarning:  nodeMem,
 		GuestMemWatch:   clampThreshold(guestMem - 5),
@@ -256,8 +256,8 @@ type PatrolService struct {
 	intelligence *Intelligence
 
 	// Cached thresholds (recalculated when thresholdProvider changes)
-	thresholds     PatrolThresholds
-	proactiveMode  bool // When true, warn before thresholds; when false, use exact thresholds
+	thresholds    PatrolThresholds
+	proactiveMode bool // When true, warn before thresholds; when false, use exact thresholds
 
 	// Runtime state
 	running          bool
@@ -625,16 +625,30 @@ func (p *PatrolService) UnsubscribeFromStream(ch chan PatrolStreamEvent) {
 }
 
 // broadcast sends an event to all subscribers
+// Subscribers with full channels are automatically removed to prevent memory leaks
 func (p *PatrolService) broadcast(event PatrolStreamEvent) {
-	p.streamMu.RLock()
-	defer p.streamMu.RUnlock()
+	p.streamMu.Lock()
+	defer p.streamMu.Unlock()
 
+	var staleChannels []chan PatrolStreamEvent
 	for ch := range p.streamSubscribers {
 		select {
 		case ch <- event:
+			// Successfully sent
 		default:
-			// Channel full, skip (don't block on slow consumers)
+			// Channel full - mark for removal (likely dead subscriber)
+			staleChannels = append(staleChannels, ch)
 		}
+	}
+
+	// Clean up stale subscribers
+	for _, ch := range staleChannels {
+		delete(p.streamSubscribers, ch)
+		// Close in a goroutine to avoid blocking if receiver is stuck
+		go func(c chan PatrolStreamEvent) {
+			defer func() { recover() }() // Ignore panic if already closed
+			close(c)
+		}(ch)
 	}
 }
 
@@ -891,19 +905,19 @@ func (p *PatrolService) runPatrol(ctx context.Context) {
 			}
 
 			errorFinding := &Finding{
-				ID:           generateFindingID("ai-service", "reliability", "ai-patrol-error"),
-				Key:          "ai-patrol-error",
-				Severity:     "warning",
-				Category:     "reliability",
-				ResourceID:   "ai-service",
-				ResourceName: "AI Patrol Service",
-				ResourceType: "service",
-				Title:        title,
-				Description:  description,
+				ID:             generateFindingID("ai-service", "reliability", "ai-patrol-error"),
+				Key:            "ai-patrol-error",
+				Severity:       "warning",
+				Category:       "reliability",
+				ResourceID:     "ai-service",
+				ResourceName:   "AI Patrol Service",
+				ResourceType:   "service",
+				Title:          title,
+				Description:    description,
 				Recommendation: recommendation,
-				Evidence:     fmt.Sprintf("Error: %s", errMsg),
-				DetectedAt:   time.Now(),
-				LastSeenAt:   time.Now(),
+				Evidence:       fmt.Sprintf("Error: %s", errMsg),
+				DetectedAt:     time.Now(),
+				LastSeenAt:     time.Now(),
 			}
 			trackFinding(errorFinding)
 		} else if aiResult != nil {
@@ -999,7 +1013,6 @@ func (p *PatrolService) runPatrol(ctx context.Context) {
 		ErrorCount:        runStats.errors,
 		Status:            status,
 	}
-
 
 	// Add AI analysis details if available
 	if runStats.aiAnalysis != nil {
@@ -1175,6 +1188,9 @@ func (p *PatrolService) analyzeNode(node models.Node) []*Finding {
 			Description:    fmt.Sprintf("Node '%s' is not responding", node.Name),
 			Recommendation: "Check network connectivity, SSH access, and Proxmox services on the node",
 		})
+
+		// Record event for correlation
+		p.recordEvent(node.ID, node.Name, "node", CorrelationEventOffline, 0)
 	}
 
 	// High CPU - use dynamic thresholds from user's alert config
@@ -1217,7 +1233,21 @@ func (p *PatrolService) analyzeNode(node models.Node) []*Finding {
 			Recommendation: "Consider migrating some VMs to other nodes or increasing node RAM",
 			Evidence:       fmt.Sprintf("Memory: %.1f%%", memUsagePct),
 		})
+
+		// Record event for correlation
+		p.recordEvent(node.ID, node.Name, "node", CorrelationEventHighMem, memUsagePct)
 	}
+
+	// Record CPU event if high
+	if cpuPct > p.thresholds.NodeCPUWatch {
+		p.recordEvent(node.ID, node.Name, "node", CorrelationEventHighCPU, cpuPct)
+	}
+
+	// Run anomaly detection
+	findings = append(findings, p.checkAnomalies(node.ID, node.Name, "node", map[string]float64{
+		"cpu":    cpuPct,
+		"memory": memUsagePct,
+	})...)
 
 	return findings
 }
@@ -1257,6 +1287,9 @@ func (p *PatrolService) analyzeGuest(id, name, guestType, node, status string,
 			Recommendation: "Consider increasing allocated RAM or investigating memory-hungry processes",
 			Evidence:       fmt.Sprintf("Memory: %.1f%%", memPct),
 		})
+
+		// Record event for correlation
+		p.recordEvent(id, name, guestType, CorrelationEventHighMem, memPct)
 	}
 
 	// High disk usage - use dynamic thresholds
@@ -1323,6 +1356,13 @@ func (p *PatrolService) analyzeGuest(id, name, guestType, node, status string,
 		})
 	}
 
+	// Run anomaly detection
+	findings = append(findings, p.checkAnomalies(id, name, guestType, map[string]float64{
+		"cpu":    cpu * 100,
+		"memory": memPct,
+		"disk":   diskPct,
+	})...)
+
 	return findings
 }
 
@@ -1358,6 +1398,9 @@ func (p *PatrolService) analyzeDockerHost(host models.DockerHost) []*Finding {
 			Recommendation: "Check network connectivity and pulse-agent service on the host",
 			Evidence:       fmt.Sprintf("Status: %s", host.Status),
 		})
+
+		// Record event for correlation
+		p.recordEvent(host.ID, hostName, "docker_host", CorrelationEventOffline, 0)
 	}
 
 	// Host not seen recently (stale data)
@@ -1401,6 +1444,9 @@ func (p *PatrolService) analyzeDockerHost(host models.DockerHost) []*Finding {
 				Recommendation: fmt.Sprintf("Check container logs: docker logs %s", containerName),
 				Evidence:       fmt.Sprintf("State: %s, Restarts: %d", c.State, c.RestartCount),
 			})
+
+			// Record restart event for correlation
+			p.recordEvent(c.ID, containerName, "docker_container", CorrelationEventRestart, float64(c.RestartCount))
 		}
 
 		// Unhealthy containers (health check failing)
@@ -1459,6 +1505,9 @@ func (p *PatrolService) analyzeDockerHost(host models.DockerHost) []*Finding {
 				Recommendation: "Check for runaway processes or resource-intensive operations",
 				Evidence:       fmt.Sprintf("CPU: %.1f%%", c.CPUPercent),
 			})
+
+			// Record event for correlation
+			p.recordEvent(c.ID, containerName, "docker_container", CorrelationEventHighCPU, c.CPUPercent)
 		}
 
 		// High memory usage
@@ -1481,12 +1530,20 @@ func (p *PatrolService) analyzeDockerHost(host models.DockerHost) []*Finding {
 				Recommendation: "Consider increasing container memory limit or optimizing memory usage",
 				Evidence:       fmt.Sprintf("Memory: %.1f%%", c.MemoryPercent),
 			})
+
+			// Record event for correlation
+			p.recordEvent(c.ID, containerName, "docker_container", CorrelationEventHighMem, c.MemoryPercent)
 		}
+
+		// Run anomaly detection for container
+		findings = append(findings, p.checkAnomalies(c.ID, containerName, "docker_container", map[string]float64{
+			"cpu":    c.CPUPercent,
+			"memory": c.MemoryPercent,
+		})...)
 	}
 
 	return findings
 }
-
 
 // analyzeStorage checks storage for issues
 func (p *PatrolService) analyzeStorage(storage models.Storage) []*Finding {
@@ -1523,6 +1580,11 @@ func (p *PatrolService) analyzeStorage(storage models.Storage) []*Finding {
 			Evidence:       fmt.Sprintf("Usage: %.1f%%", usage),
 		})
 	}
+
+	// Run anomaly detection
+	findings = append(findings, p.checkAnomalies(storage.ID, storage.Name, "storage", map[string]float64{
+		"disk": usage,
+	})...)
 
 	return findings
 }
@@ -1646,7 +1708,6 @@ func (p *PatrolService) GetRunHistory(limit int) []PatrolRunRecord {
 // Only returns critical and warning findings - watch/info are filtered out as noise
 func (p *PatrolService) GetAllFindings() []*Finding {
 	findings := p.findings.GetActive(FindingSeverityWarning)
-
 
 	// Sort by severity (critical first) then by time
 	severityOrder := map[FindingSeverity]int{
@@ -1887,7 +1948,68 @@ func (p *PatrolService) analyzeHost(host models.Host) []*Finding {
 			Description:    fmt.Sprintf("Host '%s' agent is not reporting", hostName),
 			Recommendation: "Check network connectivity and pulse-agent service status",
 		})
+
+		// Record event for correlation
+		p.recordEvent(host.ID, hostName, "host", CorrelationEventOffline, 0)
 	}
+
+	// Check CPU usage
+	if host.CPUUsage > 90 {
+		severity := FindingSeverityWatch
+		if host.CPUUsage > 95 {
+			severity = FindingSeverityWarning
+		}
+		findings = append(findings, &Finding{
+			ID:             generateFindingID(host.ID, "performance", "high-cpu"),
+			Key:            "host-high-cpu",
+			Severity:       severity,
+			Category:       FindingCategoryPerformance,
+			ResourceID:     host.ID,
+			ResourceName:   hostName,
+			ResourceType:   "host",
+			Title:          "High CPU usage",
+			Description:    fmt.Sprintf("Host '%s' CPU at %.0f%%", hostName, host.CPUUsage),
+			Recommendation: "Check for runaway processes or resource-intensive operations",
+			Evidence:       fmt.Sprintf("CPU: %.1f%%", host.CPUUsage),
+		})
+
+		// Record event for correlation
+		p.recordEvent(host.ID, hostName, "host", CorrelationEventHighCPU, host.CPUUsage)
+	}
+
+	// Check Memory usage
+	memPct := 0.0
+	if host.Memory.Total > 0 {
+		memPct = float64(host.Memory.Used) / float64(host.Memory.Total) * 100
+	}
+	if memPct > 90 {
+		severity := FindingSeverityWatch
+		if memPct > 95 {
+			severity = FindingSeverityWarning
+		}
+		findings = append(findings, &Finding{
+			ID:             generateFindingID(host.ID, "performance", "high-memory"),
+			Key:            "host-high-memory",
+			Severity:       severity,
+			Category:       FindingCategoryPerformance,
+			ResourceID:     host.ID,
+			ResourceName:   hostName,
+			ResourceType:   "host",
+			Title:          "High memory usage",
+			Description:    fmt.Sprintf("Host '%s' memory at %.0f%%", hostName, memPct),
+			Recommendation: "Check for memory leaks or investigate memory-intensive operations",
+			Evidence:       fmt.Sprintf("Memory: %.1f%%", memPct),
+		})
+
+		// Record event for correlation
+		p.recordEvent(host.ID, hostName, "host", CorrelationEventHighMem, memPct)
+	}
+
+	// Run anomaly detection
+	findings = append(findings, p.checkAnomalies(host.ID, hostName, "host", map[string]float64{
+		"cpu":    host.CPUUsage,
+		"memory": memPct,
+	})...)
 
 	// Check RAID arrays
 	for _, raid := range host.RAID {
@@ -2083,9 +2205,10 @@ func (p *PatrolService) analyzeKubernetesCluster(cluster models.KubernetesCluste
 	for _, pod := range cluster.Pods {
 		phase := strings.ToLower(strings.TrimSpace(pod.Phase))
 
-		if phase == "failed" {
+		switch phase {
+		case "failed":
 			failedPods++
-		} else if phase == "pending" {
+		case "pending":
 			pendingPods++
 		}
 
@@ -2179,16 +2302,16 @@ func cleanThinkingTokens(content string) string {
 	if content == "" {
 		return content
 	}
-	
+
 	// Remove DeepSeek thinking markers and everything before them on the same line
 	// These appear as: <｜end▁of▁thinking｜> or <|end_of_thinking|>
 	thinkingMarkers := []string{
-		"<｜end▁of▁thinking｜>",  // DeepSeek Unicode variant
-		"<|end_of_thinking|>",    // ASCII variant
-		"<|end▁of▁thinking|>",   // Mixed variant
-		"</think>",               // Generic thinking block end
+		"<｜end▁of▁thinking｜>", // DeepSeek Unicode variant
+		"<|end_of_thinking|>", // ASCII variant
+		"<|end▁of▁thinking|>", // Mixed variant
+		"</think>",            // Generic thinking block end
 	}
-	
+
 	for _, marker := range thinkingMarkers {
 		for strings.Contains(content, marker) {
 			idx := strings.Index(content, marker)
@@ -2211,58 +2334,57 @@ func cleanThinkingTokens(content string) string {
 			}
 		}
 	}
-	
+
 	// Also remove any lines that look like internal reasoning
 	// These typically start with patterns like "Now, " or "Let's " after a blank line
 	lines := strings.Split(content, "\n")
 	var cleanedLines []string
 	skipUntilContent := false
-	
+
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		
+
 		// Skip lines that look like internal reasoning
 		if skipUntilContent {
 			// Resume when we hit actual content (markdown headers, findings, etc.)
-			if strings.HasPrefix(trimmed, "#") || 
-			   strings.HasPrefix(trimmed, "[FINDING]") ||
-			   strings.HasPrefix(trimmed, "**") ||
-			   strings.HasPrefix(trimmed, "-") ||
-			   strings.HasPrefix(trimmed, "1.") {
+			if strings.HasPrefix(trimmed, "#") ||
+				strings.HasPrefix(trimmed, "[FINDING]") ||
+				strings.HasPrefix(trimmed, "**") ||
+				strings.HasPrefix(trimmed, "-") ||
+				strings.HasPrefix(trimmed, "1.") {
 				skipUntilContent = false
 			} else {
 				continue
 			}
 		}
-		
+
 		// Detect reasoning patterns (typically after empty lines)
 		if trimmed == "" && i+1 < len(lines) {
 			nextTrimmed := strings.TrimSpace(lines[i+1])
 			if strings.HasPrefix(nextTrimmed, "Now, ") ||
-			   strings.HasPrefix(nextTrimmed, "Let's ") ||
-			   strings.HasPrefix(nextTrimmed, "Let me ") ||
-			   strings.HasPrefix(nextTrimmed, "I should ") ||
-			   strings.HasPrefix(nextTrimmed, "I'll ") ||
-			   strings.HasPrefix(nextTrimmed, "I need to ") ||
-			   strings.HasPrefix(nextTrimmed, "Checking ") ||
-			   strings.HasPrefix(nextTrimmed, "Looking at ") {
+				strings.HasPrefix(nextTrimmed, "Let's ") ||
+				strings.HasPrefix(nextTrimmed, "Let me ") ||
+				strings.HasPrefix(nextTrimmed, "I should ") ||
+				strings.HasPrefix(nextTrimmed, "I'll ") ||
+				strings.HasPrefix(nextTrimmed, "I need to ") ||
+				strings.HasPrefix(nextTrimmed, "Checking ") ||
+				strings.HasPrefix(nextTrimmed, "Looking at ") {
 				skipUntilContent = true
 				continue
 			}
 		}
-		
+
 		cleanedLines = append(cleanedLines, line)
 	}
-	
+
 	// Clean up excessive blank lines
 	content = strings.Join(cleanedLines, "\n")
 	for strings.Contains(content, "\n\n\n") {
 		content = strings.ReplaceAll(content, "\n\n\n", "\n\n")
 	}
-	
+
 	return strings.TrimSpace(content)
 }
-
 
 // runAIAnalysis uses the LLM to analyze infrastructure and identify issues
 func (p *PatrolService) runAIAnalysis(ctx context.Context, state models.StateSnapshot) (*AIAnalysisResult, error) {
@@ -2325,10 +2447,10 @@ func (p *PatrolService) runAIAnalysis(ctx context.Context, state models.StateSna
 	if finalContent == "" {
 		finalContent = contentBuffer.String()
 	}
-	
+
 	// Clean any thinking tokens that might have leaked through from the provider
 	finalContent = cleanThinkingTokens(finalContent)
-	
+
 	inputTokens = resp.InputTokens
 	outputTokens = resp.OutputTokens
 
@@ -2414,7 +2536,6 @@ BEFORE CREATING A FINDING, ASK YOURSELF:
 3. If I woke someone up at 3am for this, would they thank me or curse me?
 
 If everything looks healthy, respond with NO findings. An empty report is the BEST report.`
-
 
 	if autoFix {
 		return basePrompt + `
@@ -2561,9 +2682,10 @@ func (p *PatrolService) buildInfrastructureSummary(state models.StateSnapshot) s
 			problemPods := 0
 			for _, pod := range cluster.Pods {
 				phase := strings.ToLower(strings.TrimSpace(pod.Phase))
-				if phase == "running" {
+				switch phase {
+				case "running":
 					runningPods++
-				} else if phase == "failed" || phase == "pending" {
+				case "failed", "pending":
 					problemPods++
 				}
 			}
@@ -2593,7 +2715,6 @@ func (p *PatrolService) buildInfrastructureSummary(state models.StateSnapshot) s
 	return sb.String()
 }
 
-
 // buildEnrichedContext creates context with historical trends and predictions
 // Falls back to basic summary if metrics history is not available
 func (p *PatrolService) buildEnrichedContext(state models.StateSnapshot) string {
@@ -2602,6 +2723,7 @@ func (p *PatrolService) buildEnrichedContext(state models.StateSnapshot) string 
 	knowledgeStore := p.knowledgeStore
 	baselineStore := p.baselineStore
 	changeDetector := p.changeDetector
+	correlationDetector := p.correlationDetector
 	p.mu.RUnlock()
 
 	// If no metrics history, fall back to basic summary
@@ -2653,13 +2775,29 @@ func (p *PatrolService) buildEnrichedContext(state models.StateSnapshot) string 
 
 		if len(newChanges) > 0 {
 			log.Debug().Int("new_changes", len(newChanges)).Msg("AI Patrol: Detected infrastructure changes")
+
+			// Record events for correlation analysis
+			if correlationDetector != nil {
+				for _, change := range newChanges {
+					var eventType CorrelationEventType
+					switch change.ChangeType {
+					case memory.ChangeMigrated:
+						eventType = CorrelationEventMigration
+					case memory.ChangeRestarted:
+						eventType = CorrelationEventRestart
+					default:
+						continue
+					}
+
+					p.recordEvent(change.ResourceID, "", change.ResourceType, eventType, 0)
+				}
+			}
 		}
 	}
 
 	// Append failure predictions if pattern detector is available
 	p.mu.RLock()
 	patternDetector := p.patternDetector
-	correlationDetector := p.correlationDetector
 	p.mu.RUnlock()
 
 	if patternDetector != nil {
@@ -2927,6 +3065,75 @@ Only report NEW issues or issues where the severity has clearly escalated.`)
 	return basePrompt
 }
 
+// recordEvent records an event in the correlation detector if it's significant
+func (p *PatrolService) recordEvent(resourceID, resourceName, resourceType string, eventType CorrelationEventType, value float64) {
+	p.mu.RLock()
+	cd := p.correlationDetector
+	p.mu.RUnlock()
+
+	if cd == nil {
+		return
+	}
+
+	cd.RecordEvent(CorrelationEvent{
+		ID:           fmt.Sprintf("%s-%s-%d", resourceID, eventType, time.Now().Unix()),
+		ResourceID:   resourceID,
+		ResourceName: resourceName,
+		ResourceType: resourceType,
+		EventType:    eventType,
+		Timestamp:    time.Now(),
+		Value:        value,
+	})
+}
+
+// checkAnomalies uses learned baselines to detect abnormal metric values
+func (p *PatrolService) checkAnomalies(resourceID, resourceName, resourceType string, metrics map[string]float64) []*Finding {
+	p.mu.RLock()
+	bs := p.baselineStore
+	p.mu.RUnlock()
+
+	if bs == nil {
+		return nil
+	}
+
+	var findings []*Finding
+	for metric, value := range metrics {
+		severity, zScore, bl := bs.CheckAnomaly(resourceID, metric, value)
+		// We only care about High or Critical anomalies (Z-score > 3.0)
+		if severity == baseline.AnomalyHigh || severity == baseline.AnomalyCritical {
+			findingSeverity := FindingSeverityWatch
+			if severity == baseline.AnomalyCritical {
+				findingSeverity = FindingSeverityWarning
+			}
+
+			findings = append(findings, &Finding{
+				ID:             generateFindingID(resourceID, "performance", "anomaly-"+metric),
+				Key:            "metric-anomaly",
+				Severity:       findingSeverity,
+				Category:       FindingCategoryPerformance,
+				ResourceID:     resourceID,
+				ResourceName:   resourceName,
+				ResourceType:   resourceType,
+				Title:          fmt.Sprintf("Anomalous %s usage", metric),
+				Description:    fmt.Sprintf("'%s' is showing abnormal %s usage of %.1f%% (typical mean: %.1f%%, dev: %.1f)", resourceName, metric, value, bl.Mean, bl.StdDev),
+				Recommendation: "Investigate if this change in behavior is expected for this resource.",
+				Evidence:       fmt.Sprintf("Current: %.1f, Baseline Mean: %.1f, Z-Score: %.1f", value, bl.Mean, zScore),
+			})
+
+			// Record this as an event for correlation if it's a spike
+			switch metric {
+			case "cpu":
+				p.recordEvent(resourceID, resourceName, resourceType, CorrelationEventHighCPU, value)
+			case "memory":
+				p.recordEvent(resourceID, resourceName, resourceType, CorrelationEventHighMem, value)
+			case "disk":
+				p.recordEvent(resourceID, resourceName, resourceType, CorrelationEventDiskFull, value)
+			}
+		}
+	}
+	return findings
+}
+
 // validateAIFindings filters out noisy/invalid findings from AI analysis
 // This is a safety net to catch cases where the LLM generates low-quality findings
 // that would annoy users (e.g., "CPU at 7% vs typical 4% is elevated")
@@ -3162,14 +3369,22 @@ func (p *PatrolService) parseFindingBlock(block string) *Finding {
 		cat = FindingCategoryPerformance
 	}
 
-	// Generate stable ID from resource and category ONLY (not title)
-	// This ensures the same issue on the same resource gets the same ID even if
-	// the LLM phrases it differently each time
-	id := generateFindingID(resource, string(cat), "llm-finding")
+	// Generate stable ID from resource, category, and KEY
+	// We use the normalized key to ensure uniqueness between different findings on the same resource
+	// (e.g. high-cpu vs high-memory) while maintaining stability checks
+	normalizedKey := normalizeFindingKey(key)
+	if normalizedKey == "" {
+		// Fallback to title-based key if LLM didn't provide one
+		normalizedKey = normalizeFindingKey(title)
+		if normalizedKey == "" {
+			normalizedKey = "llm-finding"
+		}
+	}
+	id := generateFindingID(resource, string(cat), normalizedKey)
 
 	return &Finding{
 		ID:             id,
-		Key:            normalizeFindingKey(key),
+		Key:            normalizedKey,
 		Severity:       sev,
 		Category:       cat,
 		ResourceID:     resource,

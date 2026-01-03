@@ -31,29 +31,30 @@ func (a *PatrolHistoryPersistenceAdapter) SavePatrolRunHistory(runs []PatrolRunR
 	records := make([]config.PatrolRunRecord, len(runs))
 	for i, r := range runs {
 		records[i] = config.PatrolRunRecord{
-			ID:               r.ID,
-			StartedAt:        r.StartedAt,
-			CompletedAt:      r.CompletedAt,
-			DurationMs:       int64(r.Duration),
-			Type:             r.Type,
-			ResourcesChecked: r.ResourcesChecked,
-			NodesChecked:     r.NodesChecked,
-			GuestsChecked:    r.GuestsChecked,
-			DockerChecked:    r.DockerChecked,
-			StorageChecked:   r.StorageChecked,
-			HostsChecked:     r.HostsChecked,
-			PBSChecked:       r.PBSChecked,
-			NewFindings:      r.NewFindings,
-			ExistingFindings: r.ExistingFindings,
-			ResolvedFindings: r.ResolvedFindings,
-			AutoFixCount:     r.AutoFixCount,
-			FindingsSummary:  r.FindingsSummary,
-			FindingIDs:       r.FindingIDs,
-			ErrorCount:       r.ErrorCount,
-			Status:           r.Status,
-			AIAnalysis:       r.AIAnalysis,
-			InputTokens:      r.InputTokens,
-			OutputTokens:     r.OutputTokens,
+			ID:                r.ID,
+			StartedAt:         r.StartedAt,
+			CompletedAt:       r.CompletedAt,
+			DurationMs:        int64(r.Duration / time.Millisecond), // Convert nanoseconds to milliseconds
+			Type:              r.Type,
+			ResourcesChecked:  r.ResourcesChecked,
+			NodesChecked:      r.NodesChecked,
+			GuestsChecked:     r.GuestsChecked,
+			DockerChecked:     r.DockerChecked,
+			StorageChecked:    r.StorageChecked,
+			HostsChecked:      r.HostsChecked,
+			PBSChecked:        r.PBSChecked,
+			KubernetesChecked: r.KubernetesChecked,
+			NewFindings:       r.NewFindings,
+			ExistingFindings:  r.ExistingFindings,
+			ResolvedFindings:  r.ResolvedFindings,
+			AutoFixCount:      r.AutoFixCount,
+			FindingsSummary:   r.FindingsSummary,
+			FindingIDs:        r.FindingIDs,
+			ErrorCount:        r.ErrorCount,
+			Status:            r.Status,
+			AIAnalysis:        r.AIAnalysis,
+			InputTokens:       r.InputTokens,
+			OutputTokens:      r.OutputTokens,
 		}
 	}
 	return a.config.SavePatrolRunHistory(records)
@@ -70,29 +71,30 @@ func (a *PatrolHistoryPersistenceAdapter) LoadPatrolRunHistory() ([]PatrolRunRec
 	runs := make([]PatrolRunRecord, len(data.Runs))
 	for i, r := range data.Runs {
 		runs[i] = PatrolRunRecord{
-			ID:               r.ID,
-			StartedAt:        r.StartedAt,
-			CompletedAt:      r.CompletedAt,
-			Duration:         time.Duration(r.DurationMs),
-			Type:             r.Type,
-			ResourcesChecked: r.ResourcesChecked,
-			NodesChecked:     r.NodesChecked,
-			GuestsChecked:    r.GuestsChecked,
-			DockerChecked:    r.DockerChecked,
-			StorageChecked:   r.StorageChecked,
-			HostsChecked:     r.HostsChecked,
-			PBSChecked:       r.PBSChecked,
-			NewFindings:      r.NewFindings,
-			ExistingFindings: r.ExistingFindings,
-			ResolvedFindings: r.ResolvedFindings,
-			AutoFixCount:     r.AutoFixCount,
-			FindingsSummary:  r.FindingsSummary,
-			FindingIDs:       r.FindingIDs,
-			ErrorCount:       r.ErrorCount,
-			Status:           r.Status,
-			AIAnalysis:       r.AIAnalysis,
-			InputTokens:      r.InputTokens,
-			OutputTokens:     r.OutputTokens,
+			ID:                r.ID,
+			StartedAt:         r.StartedAt,
+			CompletedAt:       r.CompletedAt,
+			Duration:          time.Duration(r.DurationMs) * time.Millisecond, // Convert milliseconds to nanoseconds
+			Type:              r.Type,
+			ResourcesChecked:  r.ResourcesChecked,
+			NodesChecked:      r.NodesChecked,
+			GuestsChecked:     r.GuestsChecked,
+			DockerChecked:     r.DockerChecked,
+			StorageChecked:    r.StorageChecked,
+			HostsChecked:      r.HostsChecked,
+			PBSChecked:        r.PBSChecked,
+			KubernetesChecked: r.KubernetesChecked,
+			NewFindings:       r.NewFindings,
+			ExistingFindings:  r.ExistingFindings,
+			ResolvedFindings:  r.ResolvedFindings,
+			AutoFixCount:      r.AutoFixCount,
+			FindingsSummary:   r.FindingsSummary,
+			FindingIDs:        r.FindingIDs,
+			ErrorCount:        r.ErrorCount,
+			Status:            r.Status,
+			AIAnalysis:        r.AIAnalysis,
+			InputTokens:       r.InputTokens,
+			OutputTokens:      r.OutputTokens,
 		}
 	}
 	return runs, nil
@@ -108,6 +110,11 @@ type PatrolRunHistoryStore struct {
 	saveTimer    *time.Timer
 	savePending  bool
 	saveDebounce time.Duration
+
+	// Error tracking for persistence
+	lastSaveError error
+	lastSaveTime  time.Time
+	onSaveError   func(err error)
 }
 
 // NewPatrolRunHistoryStore creates a new patrol run history store
@@ -162,7 +169,7 @@ func (s *PatrolRunHistoryStore) Add(run PatrolRunRecord) {
 	}
 
 	// Schedule save
-	s.scheduleSave()
+	s.scheduleSaveLocked()
 }
 
 // GetAll returns all runs (newest first)
@@ -196,8 +203,9 @@ func (s *PatrolRunHistoryStore) Count() int {
 	return len(s.runs)
 }
 
-// scheduleSave schedules a debounced save operation
-func (s *PatrolRunHistoryStore) scheduleSave() {
+// scheduleSaveLocked schedules a debounced save operation.
+// MUST be called with s.mu held (either Lock or is deferred with unlock).
+func (s *PatrolRunHistoryStore) scheduleSaveLocked() {
 	if s.persistence == nil {
 		return
 	}
@@ -225,9 +233,34 @@ func (s *PatrolRunHistoryStore) scheduleSave() {
 		if persistence != nil {
 			if err := persistence.SavePatrolRunHistory(runs); err != nil {
 				log.Error().Err(err).Msg("Failed to save patrol run history")
+				s.mu.Lock()
+				s.lastSaveError = err
+				s.mu.Unlock()
+				if onErr := s.onSaveError; onErr != nil {
+					onErr(err)
+				}
+			} else {
+				s.mu.Lock()
+				s.lastSaveError = nil
+				s.lastSaveTime = time.Now()
+				s.mu.Unlock()
 			}
 		}
 	})
+}
+
+// SetOnSaveError sets a callback that is called when persistence fails.
+func (s *PatrolRunHistoryStore) SetOnSaveError(fn func(err error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onSaveError = fn
+}
+
+// GetPersistenceStatus returns the last save error, last save time, and whether persistence is configured.
+func (s *PatrolRunHistoryStore) GetPersistenceStatus() (lastError error, lastSaveTime time.Time, hasPersistence bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastSaveError, s.lastSaveTime, s.persistence != nil
 }
 
 // FlushPersistence immediately saves any pending changes

@@ -10,9 +10,6 @@ import (
 	"github.com/rcourtman/pulse-go-rewrite/internal/models"
 )
 
-
-
-
 func TestDefaultPatrolThresholds(t *testing.T) {
 	thresholds := DefaultPatrolThresholds()
 
@@ -93,13 +90,13 @@ func TestClampThreshold(t *testing.T) {
 		input    float64
 		expected float64
 	}{
-		{50, 50},   // Normal value passes through
-		{5, 10},    // Below minimum, clamped to 10
-		{-5, 10},   // Negative, clamped to 10
-		{100, 99},  // Above maximum, clamped to 99
-		{150, 99},  // Way above, clamped to 99
-		{10, 10},   // Exactly at minimum
-		{99, 99},   // Exactly at maximum
+		{50, 50},  // Normal value passes through
+		{5, 10},   // Below minimum, clamped to 10
+		{-5, 10},  // Negative, clamped to 10
+		{100, 99}, // Above maximum, clamped to 99
+		{150, 99}, // Way above, clamped to 99
+		{10, 10},  // Exactly at minimum
+		{99, 99},  // Exactly at maximum
 	}
 
 	for _, tt := range tests {
@@ -478,12 +475,12 @@ func TestPatrolService_GetCurrentStreamOutput(t *testing.T) {
 func TestPatrolService_SetMemoryProviders(t *testing.T) {
 	ps := NewPatrolService(nil, nil)
 
-	// Test SetChangeDetector  
+	// Test SetChangeDetector
 	changeDetector := &ChangeDetector{} // Would need proper initialization
 	ps.mu.Lock()
 	ps.changeDetector = changeDetector
 	ps.mu.Unlock()
-	
+
 	if ps.GetChangeDetector() != changeDetector {
 		t.Error("Expected change detector to be set")
 	}
@@ -493,7 +490,7 @@ func TestPatrolService_SetMemoryProviders(t *testing.T) {
 	ps.mu.Lock()
 	ps.remediationLog = remLog
 	ps.mu.Unlock()
-	
+
 	if ps.GetRemediationLog() != remLog {
 		t.Error("Expected remediation log to be set")
 	}
@@ -517,8 +514,29 @@ func TestPatrolRunRecord(t *testing.T) {
 	if record.ID != "test-run-1" {
 		t.Errorf("Expected ID 'test-run-1', got '%s'", record.ID)
 	}
+	if record.CompletedAt != now.Add(5*time.Second) {
+		t.Error("Expected CompletedAt to match now + 5s")
+	}
+	if record.Duration != 5*time.Second {
+		t.Errorf("Expected duration 5s, got %v", record.Duration)
+	}
 	if record.ResourcesChecked != 10 {
 		t.Errorf("Expected 10 resources checked, got %d", record.ResourcesChecked)
+	}
+	if record.StartedAt != now {
+		t.Error("Expected StartedAt to match now")
+	}
+	if record.Type != "patrol" {
+		t.Errorf("Expected type 'patrol', got '%s'", record.Type)
+	}
+	if record.NodesChecked != 2 {
+		t.Errorf("Expected 2 nodes checked, got %d", record.NodesChecked)
+	}
+	if record.GuestsChecked != 5 {
+		t.Errorf("Expected 5 guests checked, got %d", record.GuestsChecked)
+	}
+	if record.NewFindings != 1 {
+		t.Errorf("Expected 1 new finding, got %d", record.NewFindings)
 	}
 	if record.Status != "issues_found" {
 		t.Errorf("Expected status 'issues_found', got '%s'", record.Status)
@@ -528,7 +546,7 @@ func TestPatrolRunRecord(t *testing.T) {
 func TestPatrolStatus_Fields(t *testing.T) {
 	now := time.Now()
 	next := now.Add(15 * time.Minute)
-	
+
 	status := PatrolStatus{
 		Running:          true,
 		Enabled:          true,
@@ -545,11 +563,32 @@ func TestPatrolStatus_Fields(t *testing.T) {
 	if !status.Running {
 		t.Error("Expected running to be true")
 	}
+	if !status.Enabled {
+		t.Error("Expected enabled to be true")
+	}
 	if status.FindingsCount != 3 {
 		t.Errorf("Expected 3 findings, got %d", status.FindingsCount)
 	}
 	if status.LastPatrolAt == nil {
 		t.Error("Expected LastPatrolAt to be set")
+	}
+	if *status.NextPatrolAt != next {
+		t.Error("NextPatrolAt value mismatch")
+	}
+	if status.LastDuration != 5*time.Second {
+		t.Errorf("Expected last duration 5s, got %v", status.LastDuration)
+	}
+	if status.ResourcesChecked != 25 {
+		t.Errorf("Expected 25 resources checked, got %d", status.ResourcesChecked)
+	}
+	if status.FindingsCount != 3 {
+		t.Errorf("Expected 3 findings, got %d", status.FindingsCount)
+	}
+	if status.ErrorCount != 0 {
+		t.Errorf("Expected 0 errors, got %d", status.ErrorCount)
+	}
+	if status.Healthy {
+		t.Error("Expected Healthy to be false")
 	}
 	if status.IntervalMs != 900000 {
 		t.Errorf("Expected interval 900000ms, got %d", status.IntervalMs)
@@ -564,7 +603,7 @@ func TestFormatDurationPatrol(t *testing.T) {
 		{30 * time.Minute, "30m"},
 		{59 * time.Minute, "59m"},
 		{60 * time.Minute, "1h"},
-		{90 * time.Minute, "1h"},    // Less than 24h, shows hours
+		{90 * time.Minute, "1h"}, // Less than 24h, shows hours
 		{2 * time.Hour, "2h"},
 		{23 * time.Hour, "23h"},
 		{24 * time.Hour, "1d"},
@@ -608,7 +647,7 @@ func TestFormatBytesInt64(t *testing.T) {
 		input    int64
 		expected string
 	}{
-		{-100, "0 B"},     // Negative values return "0 B"
+		{-100, "0 B"}, // Negative values return "0 B"
 		{0, "0 B"},
 		{1024, "1.0 KB"},
 		{1073741824, "1.0 GB"},

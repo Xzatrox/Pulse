@@ -24,6 +24,7 @@ import (
 	"github.com/rcourtman/pulse-go-rewrite/internal/ai/memory"
 	"github.com/rcourtman/pulse-go-rewrite/internal/ai/providers"
 	"github.com/rcourtman/pulse-go-rewrite/internal/config"
+	"github.com/rcourtman/pulse-go-rewrite/internal/license"
 	"github.com/rcourtman/pulse-go-rewrite/internal/models"
 	"github.com/rcourtman/pulse-go-rewrite/internal/types"
 	"github.com/rs/zerolog/log"
@@ -429,14 +430,13 @@ func (s *Service) GetLicenseState() (string, bool) {
 	return checker.GetLicenseStateString()
 }
 
-// FeatureAIPatrol is the license feature constant for AI Patrol
-const FeatureAIPatrol = "ai_patrol"
-
-// FeatureAIAlerts is the license feature constant for AI Alert Analysis
-const FeatureAIAlerts = "ai_alerts"
-
-// FeatureAIAutoFix is the license feature constant for AI Auto-Fix
-const FeatureAIAutoFix = "ai_autofix"
+// Feature constants are imported from the license package for compile-time consistency.
+// This ensures the ai package always uses the same feature strings as the license system.
+const (
+	FeatureAIPatrol  = license.FeatureAIPatrol
+	FeatureAIAlerts  = license.FeatureAIAlerts
+	FeatureAIAutoFix = license.FeatureAIAutoFix
+)
 
 // StartPatrol starts the background patrol service
 func (s *Service) StartPatrol(ctx context.Context) {
@@ -486,6 +486,7 @@ func (s *Service) StartPatrol(ctx context.Context) {
 			enabled = false
 		}
 		alertAnalyzer.SetEnabled(enabled)
+		alertAnalyzer.Start() // Start cleanup goroutine
 		log.Info().
 			Bool("enabled", enabled).
 			Msg("Alert-triggered AI analysis configured")
@@ -501,10 +502,14 @@ func (s *Service) StartPatrol(ctx context.Context) {
 func (s *Service) StopPatrol() {
 	s.mu.RLock()
 	patrol := s.patrolService
+	alertAnalyzer := s.alertTriggeredAnalyzer
 	s.mu.RUnlock()
 
 	if patrol != nil {
 		patrol.Stop()
+	}
+	if alertAnalyzer != nil {
+		alertAnalyzer.Stop()
 	}
 }
 
@@ -1890,7 +1895,7 @@ func isActionableCommand(cmd string) bool {
 
 // generateRemediationSummary creates a human-readable summary of what a command achieved
 // This is used to display meaningful descriptions in the Pulse AI Impact section
-func generateRemediationSummary(command string, targetType string, context map[string]interface{}) string {
+func generateRemediationSummary(command string, _ string, context map[string]interface{}) string {
 	cmd := strings.TrimSpace(command)
 
 	// Extract target name from context
@@ -3599,7 +3604,7 @@ func truncateString(s string, maxLen int) string {
 // - Trend analysis ("memory growing 5%/day")
 // - Predictions ("disk full in 12 days")
 // - Recent changes ("config changed 2 hours ago")
-func (s *Service) buildEnrichedResourceContext(resourceID, resourceType string, currentMetrics map[string]interface{}) string {
+func (s *Service) buildEnrichedResourceContext(resourceID, _ string, currentMetrics map[string]interface{}) string {
 	s.mu.RLock()
 	patrol := s.patrolService
 	s.mu.RUnlock()

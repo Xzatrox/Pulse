@@ -52,6 +52,8 @@ import { AIChat } from './components/AI/AIChat';
 import { AIStatusIndicator } from './components/AI/AIStatusIndicator';
 import { aiChatStore } from './stores/aiChat';
 import { useResourcesAsLegacy } from './hooks/useResources';
+import { updateSystemSettingsFromResponse } from './stores/systemSettings';
+
 
 const Dashboard = lazy(() =>
   import('./components/Dashboard/Dashboard').then((module) => ({ default: module.Dashboard })),
@@ -572,6 +574,8 @@ function App() {
         if (!hasLocalPreference) {
           try {
             const systemSettings = await SettingsAPI.getSystemSettings();
+            // Update system settings store (for Docker update actions, etc.)
+            updateSystemSettingsFromResponse(systemSettings);
             if (systemSettings.theme && systemSettings.theme !== '') {
               const prefersDark = systemSettings.theme === 'dark';
               setDarkMode(prefersDark);
@@ -618,6 +622,8 @@ function App() {
         if (!hasLocalPreference) {
           try {
             const systemSettings = await SettingsAPI.getSystemSettings();
+            // Update system settings store (for Docker update actions, etc.)
+            updateSystemSettingsFromResponse(systemSettings);
             if (systemSettings.theme && systemSettings.theme !== '') {
               const prefersDark = systemSettings.theme === 'dark';
               setDarkMode(prefersDark);
@@ -675,6 +681,8 @@ function App() {
         if (!hasLocalPreference) {
           try {
             const systemSettings = await SettingsAPI.getSystemSettings();
+            // Update system settings store (for Docker update actions, etc.)
+            updateSystemSettingsFromResponse(systemSettings);
             if (systemSettings.theme && systemSettings.theme !== '') {
               const prefersDark = systemSettings.theme === 'dark';
               setDarkMode(prefersDark);
@@ -692,6 +700,10 @@ function App() {
         } else {
           // We have a local preference, just mark that we've checked the server
           setHasLoadedServerTheme(true);
+          // Still load system settings for other features (Docker update actions, etc.)
+          SettingsAPI.getSystemSettings()
+            .then((settings) => updateSystemSettingsFromResponse(settings))
+            .catch((error) => logger.warn('Failed to load system settings', error));
         }
       }
     } catch (error) {

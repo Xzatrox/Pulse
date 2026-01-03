@@ -180,3 +180,7 @@ deployment/
 *.code-workspace
 q-dev-*.md
 start-pulse-agent.sh
+
+# Dev container extension auth
+.devcontainer/.claude/
+.devcontainer/.config/

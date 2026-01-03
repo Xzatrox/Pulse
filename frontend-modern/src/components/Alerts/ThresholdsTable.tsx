@@ -140,6 +140,8 @@ const DEFAULT_SNAPSHOT_WARNING_SIZE = 0;
 const DEFAULT_SNAPSHOT_CRITICAL_SIZE = 0;
 const DEFAULT_BACKUP_WARNING = 7;
 const DEFAULT_BACKUP_CRITICAL = 14;
+const DEFAULT_BACKUP_FRESH_HOURS = 24;
+const DEFAULT_BACKUP_STALE_HOURS = 72;
 
 // Simple threshold object for the UI
 interface SimpleThresholds {
@@ -186,8 +188,14 @@ interface ThresholdsTableProps {
   guestPoweredOffSeverity: () => 'warning' | 'critical';
   setGuestPoweredOffSeverity: (value: 'warning' | 'critical') => void;
   nodeDefaults: SimpleThresholds;
+  pbsDefaults?: SimpleThresholds;
   hostDefaults: SimpleThresholds;
   setNodeDefaults: (
+    value:
+      | Record<string, number | undefined>
+      | ((prev: Record<string, number | undefined>) => Record<string, number | undefined>),
+  ) => void;
+  setPBSDefaults?: (
     value:
       | Record<string, number | undefined>
       | ((prev: Record<string, number | undefined>) => Record<string, number | undefined>),
@@ -259,12 +267,14 @@ interface ThresholdsTableProps {
   setStorageDefault: (value: number) => void;
   resetGuestDefaults?: () => void;
   resetNodeDefaults?: () => void;
+  resetPBSDefaults?: () => void;
   resetHostDefaults?: () => void;
   resetDockerDefaults?: () => void;
   resetDockerIgnoredPrefixes?: () => void;
   resetStorageDefault?: () => void;
   factoryGuestDefaults?: Record<string, number | undefined>;
   factoryNodeDefaults?: Record<string, number | undefined>;
+  factoryPBSDefaults?: Record<string, number | undefined>;
   factoryHostDefaults?: Record<string, number | undefined>;
   factoryDockerDefaults?: Record<string, number | undefined>;
   factoryStorageDefault?: number;
@@ -580,7 +590,7 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
     }
 
     // Temperature
-    if (metric === 'temperature') {
+    if (metric === 'temperature' || metric === 'diskTemperature') {
       return formatTemperature(value);
     }
 
@@ -1182,11 +1192,15 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
       enabled: false,
       warningDays: DEFAULT_BACKUP_WARNING,
       criticalDays: DEFAULT_BACKUP_CRITICAL,
+      freshHours: DEFAULT_BACKUP_FRESH_HOURS,
+      staleHours: DEFAULT_BACKUP_STALE_HOURS,
     };
 
   const sanitizeBackupConfig = (config: BackupAlertConfig): BackupAlertConfig => {
     let warning = Math.max(0, Math.round(config.warningDays ?? 0));
     let critical = Math.max(0, Math.round(config.criticalDays ?? 0));
+    let fresh = Math.max(0, Math.round(config.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS));
+    let stale = Math.max(0, Math.round(config.staleHours ?? DEFAULT_BACKUP_STALE_HOURS));
 
     if (critical > 0 && warning > critical) {
       warning = critical;
@@ -1195,10 +1209,17 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
       critical = warning;
     }
 
+    // Ensure stale is at least fresh
+    if (stale < fresh) {
+      stale = fresh;
+    }
+
     return {
       enabled: !!config.enabled,
       warningDays: warning,
       criticalDays: critical,
+      freshHours: fresh,
+      staleHours: stale,
     };
   };
 
@@ -1218,6 +1239,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
   const backupDefaultsRecord = createMemo(() => {
     const current = props.backupDefaults();
     return {
+      'fresh hours': current.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS,
+      'stale hours': current.staleHours ?? DEFAULT_BACKUP_STALE_HOURS,
       'warning days': current.warningDays ?? 0,
       'critical days': current.criticalDays ?? 0,
     };
@@ -1226,6 +1249,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
   const backupFactoryDefaultsRecord = createMemo(() => {
     const factory = backupFactoryConfig();
     return {
+      'fresh hours': factory.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS,
+      'stale hours': factory.staleHours ?? DEFAULT_BACKUP_STALE_HOURS,
       'warning days': factory.warningDays ?? DEFAULT_BACKUP_WARNING,
       'critical days': factory.criticalDays ?? DEFAULT_BACKUP_CRITICAL,
     };
@@ -1254,7 +1279,11 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
       (backupCurrent.warningDays ?? DEFAULT_BACKUP_WARNING) !==
       (backupFactory.warningDays ?? DEFAULT_BACKUP_WARNING) ||
       (backupCurrent.criticalDays ?? DEFAULT_BACKUP_CRITICAL) !==
-      (backupFactory.criticalDays ?? DEFAULT_BACKUP_CRITICAL)
+      (backupFactory.criticalDays ?? DEFAULT_BACKUP_CRITICAL) ||
+      (backupCurrent.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS) !==
+      (backupFactory.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS) ||
+      (backupCurrent.staleHours ?? DEFAULT_BACKUP_STALE_HOURS) !==
+      (backupFactory.staleHours ?? DEFAULT_BACKUP_STALE_HOURS)
       ? 1
       : 0;
   });
@@ -1384,10 +1413,10 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         override?.thresholds &&
         Object.keys(override.thresholds).some((key) => {
           const k = key as keyof typeof override.thresholds;
-          // PBS uses node defaults for CPU/Memory
+          // PBS uses pbsDefaults for CPU/Memory (not nodeDefaults)
           return (
             override.thresholds[k] !== undefined &&
-            override.thresholds[k] !== props.nodeDefaults[k as keyof typeof props.nodeDefaults]
+            override.thresholds[k] !== (props.pbsDefaults?.[k as keyof typeof props.pbsDefaults] ?? (k === 'cpu' ? 80 : 85))
           );
         });
 
@@ -1411,8 +1440,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
         disableConnectivity,
         thresholds: override?.thresholds || {},
         defaults: {
-          cpu: props.nodeDefaults.cpu,
-          memory: props.nodeDefaults.memory,
+          cpu: props.pbsDefaults?.cpu ?? 80,
+          memory: props.pbsDefaults?.memory ?? 85,
         },
       };
     });
@@ -2654,26 +2683,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                   setEditingNote={setEditingNote}
                   formatMetricValue={formatMetricValue}
                   hasActiveAlert={hasActiveAlert}
-                  globalDefaults={{ cpu: props.nodeDefaults.cpu, memory: props.nodeDefaults.memory }}
-                  setGlobalDefaults={(value) => {
-                    if (typeof value === 'function') {
-                      const newValue = value({
-                        cpu: props.nodeDefaults.cpu,
-                        memory: props.nodeDefaults.memory,
-                      });
-                      props.setNodeDefaults((prev) => ({
-                        ...prev,
-                        cpu: newValue.cpu ?? prev.cpu,
-                        memory: newValue.memory ?? prev.memory,
-                      }));
-                    } else {
-                      props.setNodeDefaults((prev) => ({
-                        ...prev,
-                        cpu: value.cpu ?? prev.cpu,
-                        memory: value.memory ?? prev.memory,
-                      }));
-                    }
-                  }}
+                  globalDefaults={props.pbsDefaults ?? { cpu: 80, memory: 85 }}
+                  setGlobalDefaults={props.setPBSDefaults}
                   setHasUnsavedChanges={props.setHasUnsavedChanges}
                   globalDisableFlag={props.disableAllPBS}
                   onToggleGlobalDisable={() => props.setDisableAllPBS(!props.disableAllPBS())}
@@ -2685,15 +2696,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                   globalDelaySeconds={props.timeThresholds().pbs}
                   metricDelaySeconds={props.metricTimeThresholds().pbs ?? {}}
                   onMetricDelayChange={(metric, value) => updateMetricDelay('pbs', metric, value)}
-                  factoryDefaults={
-                    props.factoryNodeDefaults
-                      ? {
-                        cpu: props.factoryNodeDefaults.cpu,
-                        memory: props.factoryNodeDefaults.memory,
-                      }
-                      : undefined
-                  }
-                  onResetDefaults={props.resetNodeDefaults}
+                  factoryDefaults={props.factoryPBSDefaults}
+                  onResetDefaults={props.resetPBSDefaults}
                 />
               </div>
             </CollapsibleSection>
@@ -2852,6 +2856,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                     },
                   ]}
                   columns={[
+                    'Fresh Hours',
+                    'Stale Hours',
                     'Warning Days',
                     'Critical Days',
                     'Warning Size (GiB)',
@@ -2875,6 +2881,8 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                   setGlobalDefaults={(value) => {
                     updateBackupDefaults((prev) => {
                       const currentRecord = {
+                        'fresh hours': prev.freshHours ?? DEFAULT_BACKUP_FRESH_HOURS,
+                        'stale hours': prev.staleHours ?? DEFAULT_BACKUP_STALE_HOURS,
                         'warning days': prev.warningDays ?? 0,
                         'critical days': prev.criticalDays ?? 0,
                       };
@@ -2884,6 +2892,14 @@ export function ThresholdsTable(props: ThresholdsTableProps) {
                           : { ...currentRecord, ...value };
                       return {
                         ...prev,
+                        freshHours:
+                          typeof nextRecord['fresh hours'] === 'number'
+                            ? nextRecord['fresh hours']
+                            : prev.freshHours,
+                        staleHours:
+                          typeof nextRecord['stale hours'] === 'number'
+                            ? nextRecord['stale hours']
+                            : prev.staleHours,
                         warningDays:
                           typeof nextRecord['warning days'] === 'number'
                             ? nextRecord['warning days']
